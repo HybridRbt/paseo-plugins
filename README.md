@@ -4,16 +4,67 @@ A [Paseo](https://github.com/getpaseo/paseo) plugin that shows a short "where th
 for every agent — goal, current state, next action — pinned outside the conversation timeline.
 Provider-agnostic: works with Claude, Codex, OMP, Pi, OpenCode, and custom providers.
 
-Status: design phase. See [docs/design.md](docs/design.md) for the design and a comparison with
-Claude Code, Codex, OMP, and other agent products.
+See [docs/design.md](docs/design.md) for the design and a comparison with Claude Code, Codex, OMP,
+and other agent products.
 
 > Paseo plugins are trusted, unsandboxed code that runs on the daemon host. Recaps send recent
-> conversation text to the model provider configured for Paseo metadata generation.
+> conversation text (user and assistant messages only, no tool output) to the model you use for
+> Paseo metadata generation.
+
+## How it works
+
+- By default, the daemon generates a recap 10 seconds after every completed turn, from the last 8
+  exchanges (user and assistant text only). If you reply within those 10 seconds, that turn is
+  skipped. A new turn aborts any generation in flight and marks the recap as out of date.
+- The recap appears as a **Recap** pill above the composer; tap it for the card with the next
+  action, regenerate, and earlier recaps. **Recaps** in the sidebar (or "Show agent recaps" in the
+  Command Center) lists every agent's latest recap. `/recap` creates one on demand.
+- Recaps never enter the agent's context or timeline. They are stored in
+  `$PASEO_HOME/plugin-data/paseo-recap/recaps.json` (latest + 4 previous per agent, pruned after
+  30 days, removed when the agent is archived).
+- Skipped automatically: canceled or failed turns, pending permissions or questions, context
+  compaction, parents while a subagent runs (up to 10 min), subagents themselves, and providers whose
+  plan usage is ≥ 90%. See [docs/design.md §5.12](docs/design.md#512-edge-cases-compared) for how
+  each case compares with Claude Code, Codex, and OMP.
+
+### Settings
+
+**Settings → Plugins → paseo-recap → Recap**: automatic recaps on/off, frequency (every 1–5 turns),
+wait after a turn (immediately to 10 min), first recap after N messages, subagents, and model.
+
+### Model
+
+Generation runs a local CLI with your existing login. By default the agent's own provider goes first
+(a Codex agent is recapped by Codex), then Paseo's `agents.metadataGeneration.providers`, then
+`claude` (`haiku`) and `codex` (`gpt-6-luna`):
+
+| Provider | Invocation |
+|---|---|
+| `claude` | `claude -p --json-schema … --tools "" --no-session-persistence --setting-sources ""`, thinking disabled |
+| `codex` | `codex exec --ephemeral --sandbox read-only --output-schema … --disable hooks`, low reasoning effort |
+| `opencode` | `opencode run --pure --agent plan --format json`, session deleted afterwards |
+
+Each call runs in a temporary directory, without tools, and leaves no session behind. At most two run
+at once. Measured: Claude Haiku ~3 s and ~$0.002 per recap; Codex GPT-6-Luna ~10 s.
+
+## Requirements
+
+- Paseo ≥ 0.10.3 with plugins enabled (`"pluginsEnabled": true` in `~/.paseo/config.json`)
+- `claude`, `codex`, or `opencode` CLI on the daemon's `PATH`, logged in
 
 ## Development
 
 ```bash
 npm install
 npm run typecheck
+npm test
+RECAP_E2E=1 npx vitest run test/generators.real.e2e.test.ts   # real CLIs, costs a few cents
 paseo plugin install "$PWD"
+paseo plugin reload paseo-recap   # after changes
+paseo plugin logs paseo-recap
 ```
+
+## Status
+
+Feature-complete for the design in [docs/design.md](docs/design.md); not yet verified inside a
+running Paseo (see §7 there).

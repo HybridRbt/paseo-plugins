@@ -7,7 +7,8 @@
       "ES2023"
     ],
     "types": [
-      "react"
+      "react",
+      "node"
     ],
     "jsx": "react-jsx",
     "strict": true,
@@ -19,5 +20,8 @@
   "include": [
     "**/*.ts",
     "**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules"
   ]
 }
