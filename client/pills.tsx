@@ -1,13 +1,33 @@
-import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
+import type {
+  PluginButton,
+  PluginButtonIconProps,
+  PluginButtonRegistration,
+  PluginClientContext,
+} from "@getpaseo/plugin/client";
+import { ActivityIndicator } from "react-native";
 import { recapListRpc, type RecapView } from "../shared/recap";
-import { pillPresentation } from "./format";
+import { isPending, pillPresentation, type PillPresentation } from "./format";
 import { makeRecapPopover } from "./recap-card";
 
-const TICK_MS = 5_000;
+const TICK_MS = 2_000;
 const IDLE_POLL_MS = 30_000;
-/** After agent activity, poll faster: a recap lands a few seconds after the idle delay. */
-const ACTIVE_WINDOW_MS = 90_000;
+/** After agent activity, poll every tick: a recap lands a few seconds after the idle delay. */
+const ACTIVE_WINDOW_MS = 30_000;
 const UPDATE_DEBOUNCE_MS = 1_000;
+
+/** The spinner Paseo itself shows while loading (a small ActivityIndicator). */
+function SpinnerIcon({ color }: PluginButtonIconProps) {
+  return <ActivityIndicator size="small" color={color} />;
+}
+
+function pillButton({
+  visible,
+  label,
+  icon,
+  busy,
+}: PillPresentation): Pick<PluginButton, "visible" | "label" | "icon"> {
+  return { visible, label, icon: busy ? SpinnerIcon : icon };
+}
 
 /**
  * Keeps one composer pill per agent in sync with daemon recaps. Recaps finish after an idle delay
@@ -23,7 +43,7 @@ export class RecapPills {
   #refreshing = false;
   #lastRefreshAt = 0;
   #activeUntil = 0;
-  readonly #popover = makeRecapPopover(() => this.refresh());
+  readonly #popover = makeRecapPopover((agentId, request) => this.track(agentId, request));
 
   constructor(client: PluginClientContext) {
     this.#client = client;
@@ -54,7 +74,10 @@ export class RecapPills {
       });
     this.#poll = setInterval(() => {
       const now = Date.now();
-      if (now < this.#activeUntil || now - this.#lastRefreshAt >= IDLE_POLL_MS) void this.refresh();
+      const pending = [...this.#views.values()].some(isPending);
+      if (pending || now < this.#activeUntil || now - this.#lastRefreshAt >= IDLE_POLL_MS) {
+        void this.refresh();
+      }
     }, TICK_MS);
   }
 
@@ -73,6 +96,18 @@ export class RecapPills {
     }
   }
 
+  /** Shows progress on an agent's pill while a manual recap request runs, then its result. */
+  async track<T>(agentId: string, request: Promise<T>): Promise<T> {
+    const view = this.#views.get(agentId) ?? { agentId, recap: null, previous: [], error: null, state: "idle" };
+    this.#views.set(agentId, { ...view, state: "generating", error: null });
+    this.#render();
+    try {
+      return await request;
+    } finally {
+      void this.refresh();
+    }
+  }
+
   stop(): void {
     this.#lifetime.abort();
     if (this.#debounce) clearTimeout(this.#debounce);
@@ -83,16 +118,13 @@ export class RecapPills {
   #register(agent: { id: string; workspaceId?: string | null }): void {
     if (this.#lifetime.signal.aborted || !agent.workspaceId) return;
     this.#pills.get(agent.id)?.remove();
-    const presentation = pillPresentation(this.#views.get(agent.id), Date.now());
     const registration = this.#client.addComposerPill({
       id: "recap",
       workspaceId: agent.workspaceId,
       agentId: agent.id,
       button: {
         title: "Session recap",
-        icon: presentation.icon,
-        label: presentation.label,
-        visible: presentation.visible,
+        ...pillButton(pillPresentation(this.#views.get(agent.id), Date.now())),
         behavior: { kind: "popover", Content: this.#popover },
       },
     });
@@ -102,8 +134,7 @@ export class RecapPills {
   #render(): void {
     const now = Date.now();
     for (const [agentId, pill] of this.#pills) {
-      const { visible, label, icon } = pillPresentation(this.#views.get(agentId), now);
-      pill.update({ visible, label, icon });
+      pill.update(pillButton(pillPresentation(this.#views.get(agentId), now)));
     }
   }
 

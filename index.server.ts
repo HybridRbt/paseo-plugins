@@ -6,17 +6,17 @@ import { join } from "node:path";
 import {
   recapGetRpc,
   recapListRpc,
+  recapModelPlanRpc,
   recapRegenerateRpc,
+  RECAP_TIMELINE_KIND,
   recapSettings,
   type RecapSettings,
+  type RecapTimelineData,
 } from "./shared/recap";
-import {
-  errorMessage,
-  RecapGenerator,
-  RecapSkippedError,
-  resolveCandidates,
-  runProcess,
-} from "./server/generators";
+import { errorMessage, RecapSkippedError } from "./server/errors";
+import { RecapGenerator } from "./server/generators";
+import { describeModelPlan, resolveCandidates, type GeneratorConfig } from "./server/models";
+import { runProcess } from "./server/process";
 import { RecapScheduler } from "./server/scheduler";
 import { RecapStore } from "./server/store";
 import { UsageGuard } from "./server/usage";
@@ -50,6 +50,11 @@ export default function contribute(server: PluginServerContext) {
     return paseo;
   };
 
+  const readGeneratorConfig = async (api: PaseoApi): Promise<GeneratorConfig> => {
+    const { config } = await api.config.get();
+    return { metadataGeneration: config.metadataGeneration, providers: config.providers };
+  };
+
   const readSettings = async (): Promise<RecapSettings> => {
     const state = await settings.read();
     if (state.status === "ready") return state.values;
@@ -62,12 +67,8 @@ export default function contribute(server: PluginServerContext) {
     readSettings,
     log,
     async generate(prompt, signal, { agentProvider, trigger }) {
-      const [{ config }, current] = await Promise.all([requirePaseo().config.get(), readSettings()]);
-      let candidates = resolveCandidates(
-        current.generator,
-        { metadataGeneration: config.metadataGeneration, providers: config.providers },
-        agentProvider,
-      );
+      const [config, current] = await Promise.all([readGeneratorConfig(requirePaseo()), readSettings()]);
+      let candidates = resolveCandidates(current.generator, config, agentProvider);
       if (trigger === "auto" && candidates.length > 0) {
         const nearLimit = await usage.nearLimit();
         const allowed = candidates.filter((candidate) => !nearLimit.has(candidate.provider));
@@ -90,6 +91,17 @@ export default function contribute(server: PluginServerContext) {
         provider: payload.agent?.provider ?? null,
         running: payload.agent?.status === "running",
       };
+    },
+    async publish(recap) {
+      const data: RecapTimelineData = { summary: recap.summary, nextAction: recap.nextAction };
+      await requirePaseo().agents.ref(recap.agentId).timeline.append({
+        type: "plugin",
+        // One row per recap, so each lands after the turn it summarizes.
+        id: `recap:${recap.generatedAt}`,
+        kind: RECAP_TIMELINE_KIND,
+        version: 1,
+        data,
+      });
     },
   });
 
@@ -131,6 +143,10 @@ export default function contribute(server: PluginServerContext) {
     paseo = context.paseo;
     await ready;
     return { recaps: scheduler.list() };
+  });
+  server.handle(recapModelPlanRpc, async ({ generator }, context) => {
+    paseo = context.paseo;
+    return describeModelPlan(generator, await readGeneratorConfig(context.paseo));
   });
   server.handle(recapRegenerateRpc, async ({ agentId }, context) => {
     paseo = context.paseo;

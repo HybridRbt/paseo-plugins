@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pillPresentation, relativeTime, sortViews } from "../client/format";
+import { describePlan, pillPresentation, relativeTime } from "../client/format";
 import type { RecapView } from "../shared/recap";
 import { makeRecap } from "./fixtures";
 
@@ -16,33 +16,39 @@ describe("relativeTime", () => {
 });
 
 describe("pillPresentation", () => {
-  it("hides the pill until a recap exists", () => {
-    expect(pillPresentation(undefined, NOW).visible).toBe(false);
-    expect(pillPresentation(base, NOW).visible).toBe(false);
+  it("shows the pill before the first recap so one can be generated", () => {
+    expect(pillPresentation(undefined, NOW)).toMatchObject({ visible: true, label: "Recap", busy: false });
   });
 
   it("shows progress and age", () => {
-    expect(pillPresentation({ ...base, state: "generating" }, NOW).label).toBe("Recap…");
+    expect(pillPresentation({ ...base, state: "generating" }, NOW)).toMatchObject({ label: "Recap…", busy: true });
     const recap = makeRecap({ generatedAt: "2026-10-07T11:57:00.000Z", stale: true });
     expect(pillPresentation({ ...base, recap }, NOW)).toEqual({
       visible: true,
       label: "Recap · 3m",
       icon: "History",
+      busy: false,
     });
   });
 });
 
-describe("sortViews", () => {
-  it("puts first-time generations on top, then newest recaps", () => {
-    const older = { ...base, agentId: "older", recap: makeRecap({ generatedAt: "2026-10-07T10:00:00.000Z" }) };
-    const newer = { ...base, agentId: "newer", recap: makeRecap({ generatedAt: "2026-10-07T11:00:00.000Z" }) };
-    const pendingA = { ...base, agentId: "pending-a", state: "generating" as const };
-    const pendingB = { ...base, agentId: "pending-b", state: "generating" as const };
-    expect(sortViews([older, pendingA, newer, pendingB]).map((view) => view.agentId)).toEqual([
-      "pending-a",
-      "pending-b",
-      "newer",
-      "older",
-    ]);
+describe("describePlan", () => {
+  it("names the exact models in plain words", () => {
+    expect(
+      describePlan({
+        perProvider: [
+          { provider: "claude", model: "haiku" },
+          { provider: "opencode", model: null },
+        ],
+        fallback: [
+          { provider: "claude", model: "haiku" },
+          { provider: "codex", model: "gpt-6-luna" },
+        ],
+      }),
+    ).toBe(
+      "Claude agents: Claude haiku. OpenCode agents: OpenCode default model. Other agents, or if that fails: Claude haiku, then Codex gpt-6-luna.",
+    );
+    expect(describePlan({ perProvider: [], fallback: [{ provider: "claude", model: "sonnet" }] })).toBe("Claude sonnet.");
+    expect(describePlan({ perProvider: [], fallback: [] })).toMatch(/No supported model/);
   });
 });

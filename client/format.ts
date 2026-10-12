@@ -1,4 +1,4 @@
-import type { RecapView } from "../shared/recap";
+import { isRecapProvider, RECAP_PROVIDERS, type ModelPlan, type ModelRef, type RecapView } from "../shared/recap";
 
 export function relativeTime(iso: string, now: number): string {
   const seconds = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
@@ -13,24 +13,44 @@ export function relativeTime(iso: string, now: number): string {
 export interface PillPresentation {
   visible: boolean;
   label: string;
+  /** Lucide icon name; ignored while `busy`, when the pill shows a spinner instead. */
   icon: string;
+  busy: boolean;
 }
 
 export function pillPresentation(view: RecapView | undefined, now: number): PillPresentation {
-  if (view?.state === "generating") return { visible: true, label: "Recap…", icon: "LoaderCircle" };
-  if (!view?.recap) return { visible: false, label: "Recap", icon: "ScrollText" };
+  if (view?.state === "generating") return { visible: true, label: "Recap…", icon: "ScrollText", busy: true };
+  // Shown even before the first recap, so agents that predate the plugin can get one in a tap.
+  if (!view?.recap) return { visible: true, label: "Recap", icon: "ScrollText", busy: false };
   return {
     visible: true,
     label: `Recap · ${relativeTime(view.recap.generatedAt, now)}`,
     icon: view.recap.stale ? "History" : "ScrollText",
+    busy: false,
   };
 }
 
-/** Newest recap first; agents still generating their first recap go on top. */
-export function sortViews(views: readonly RecapView[]): RecapView[] {
-  return [...views].sort((a, b) => {
-    const at = a.recap ? Date.parse(a.recap.generatedAt) : Number.POSITIVE_INFINITY;
-    const bt = b.recap ? Date.parse(b.recap.generatedAt) : Number.POSITIVE_INFINITY;
-    return at === bt ? 0 : bt - at;
-  });
+/** A recap is on its way: worth polling closely so the pill never lingers on stale progress. */
+export function isPending(view: RecapView): boolean {
+  return view.state === "waiting" || view.state === "generating";
+}
+
+function providerLabel(provider: string): string {
+  return isRecapProvider(provider) ? RECAP_PROVIDERS[provider].label : provider;
+}
+
+function modelName({ provider, model }: ModelRef): string {
+  return `${providerLabel(provider)} ${model ?? "default model"}`;
+}
+
+/** Plain-language list of the models a setting resolves to, e.g. "Claude haiku, then Codex gpt-6-luna." */
+export function describePlan(plan: ModelPlan): string {
+  const order = plan.fallback.map(modelName).join(", then ");
+  if (plan.perProvider.length === 0) {
+    return order === "" ? "No supported model. Install and log in to claude, codex, or opencode." : `${order}.`;
+  }
+  const own = plan.perProvider
+    .map((ref) => `${providerLabel(ref.provider)} agents: ${modelName(ref)}.`)
+    .join(" ");
+  return order === "" ? own : `${own} Other agents, or if that fails: ${order}.`;
 }
