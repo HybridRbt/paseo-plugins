@@ -41,7 +41,7 @@ paseo plugin install npm:paseo-recap
 ```
 
 You can also paste `npm:paseo-recap` into **Settings → Plugins → Plugin source**, or install the
-latest source with `paseo plugin install github:kingsleydon/paseo-recap`.
+latest source with `paseo plugin install github:kingsleydon/paseo-plugins:plugins/recap`.
 
 Recaps start with the next completed turn of each agent. For an agent that is already idle, tap its
 **Recap** pill and choose **Generate**.
@@ -125,17 +125,14 @@ paseo plugin logs paseo-recap
 ## Releasing
 
 Releases publish to npm from GitHub Actions with [trusted publishing](https://docs.npmjs.com/trusted-publishers)
-(OIDC), so no npm token is stored anywhere. The publish job runs in the `npm` GitHub environment,
-which only `v*` tags can deploy to, and npm trusts only that environment. Bump `version` in `package.json` in a PR, merge it,
-then tag the merged commit:
+(OIDC), so no npm token is stored anywhere. Bump `version` in `package.json` in a PR, merge it,
+then tag the merged commit with `recap-v<version>`:
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0
+git tag recap-v0.2.4 && git push origin recap-v0.2.4
 ```
 
-[`.github/workflows/publish.yml`](.github/workflows/publish.yml) checks that the tag matches the
-version, runs the type check and tests, and publishes with provenance. Once the paseo.sh listing
-uses the npm package as its source, the registry proposes each new version automatically.
+See the [repository README](../../README.md#releasing) for how the publish workflow works.
 
 ## License
 
