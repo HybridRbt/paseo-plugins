@@ -1,0 +1,8 @@
+{
+  "id": "paseo-quick-prompts",
+  "name": "Quick prompts",
+  "description": "Saved prompts as one-tap pills above every agent's composer.",
+  "requirements": {
+    "paseo": ">=0.11.0"
+  }
+}
