@@ -1,11 +1,12 @@
-# Publishes to npm with trusted publishing (OIDC): no npm token is stored anywhere.
-# Release: bump "version" in package.json, merge, then push a matching tag, e.g. `git tag v0.2.0`.
+# Publishes one plugin to npm with trusted publishing (OIDC): no npm token is stored anywhere.
+# Release: bump "version" in plugins/<folder>/package.json, merge, then push a matching tag,
+# e.g. `git tag recap-v0.2.4` publishes plugins/recap at version 0.2.4.
 name: Publish to npm
 
 on:
   push:
     tags:
-      - "v*"
+      - "*-v*"
 
 permissions:
   contents: read
@@ -14,18 +15,32 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    # npm trusts only this environment, which GitHub restricts to v* tags.
+    # npm trusts only this environment, which GitHub restricts to *-v* tags.
     environment: npm
     steps:
       - uses: actions/checkout@v6
+      - name: Resolve the plugin folder from the tag
+        id: plugin
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          folder="${TAG%-v*}"
+          version="${TAG##*-v}"
+          [[ "$folder" =~ ^[a-z][a-z0-9-]*$ ]] || { echo "Invalid plugin folder in tag: $folder"; exit 1; }
+          test -f "plugins/$folder/package.json" || { echo "No plugin at plugins/$folder"; exit 1; }
+          actual="$(node -p 'require(process.argv[1]).version' "./plugins/$folder/package.json")"
+          test "$actual" = "$version" || { echo "Tag version $version does not match package.json $actual"; exit 1; }
+          echo "dir=plugins/$folder" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
-      - run: npm ci
-      - name: Check the tag matches package.json
-        run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm publish --access public
+      - working-directory: ${{ steps.plugin.outputs.dir }}
+        run: npm ci
+      - working-directory: ${{ steps.plugin.outputs.dir }}
+        run: npm run typecheck
+      - working-directory: ${{ steps.plugin.outputs.dir }}
+        run: npm test
+      - working-directory: ${{ steps.plugin.outputs.dir }}
+        run: npm publish --access public

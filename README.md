@@ -1,0 +1,48 @@
+# Paseo plugins
+
+Plugins for [Paseo](https://github.com/getpaseo/paseo) by [Kingsley](https://github.com/kingsleydon).
+
+| Plugin | What it does | npm | Source |
+|---|---|---|---|
+| [Recap](plugins/recap) | Writes a short recap of each agent's goal, progress, and next step after every turn | `npm:paseo-recap` | `github:kingsleydon/paseo-plugins:plugins/recap` |
+| [Quick prompts](plugins/quick-prompts) | Saved prompts as one-tap pills above every agent's composer | `npm:paseo-quick-prompts` | `github:kingsleydon/paseo-plugins:plugins/quick-prompts` |
+
+Install either source with `paseo plugin install <source>`, or paste it into **Settings → Plugins →
+Plugin source**. Plugins must be enabled on the daemon (**Settings → Plugins → Enable plugins**).
+
+This repository was previously `kingsleydon/paseo-recap`; old URLs redirect here.
+
+## Layout
+
+Each plugin lives in its own folder under `plugins/` with its own `package.json` and lockfile.
+There is no root package and no npm workspaces; run commands inside the plugin folder:
+
+```bash
+cd plugins/recap
+npm ci
+npm run typecheck
+npm test
+```
+
+CI runs the type check and tests for every plugin on pull requests and pushes to `main`.
+
+## Releasing
+
+Releases publish to npm from GitHub Actions with [trusted publishing](https://docs.npmjs.com/trusted-publishers)
+(OIDC), so no npm token is stored anywhere.
+
+1. Bump `version` in `plugins/<folder>/package.json` in a PR and merge it.
+2. Tag the merged commit `<folder>-v<version>` and push the tag:
+
+   ```bash
+   git tag recap-v0.2.4 && git push origin recap-v0.2.4
+   ```
+
+[`.github/workflows/publish.yml`](.github/workflows/publish.yml) checks that `plugins/<folder>`
+exists and that its version matches the tag, then runs `npm ci`, the type check, and the tests, and
+publishes that folder with provenance. The job runs in the `npm` GitHub environment, which only
+`*-v*` tags can deploy to, and npm trusts only that workflow and environment.
+
+## License
+
+[MIT](LICENSE)
