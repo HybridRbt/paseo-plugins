@@ -1,8 +1,16 @@
 import { usePaseo, useRpc, useSettings, type PluginSurfaceProps, type SettingsState } from "@getpaseo/plugin/client";
-import { copyText, useToast } from "@getpaseo/plugin/client/react-native";
-import { SettingsAction, SettingsCard, SettingsRow, SettingsSection, SettingsSelect } from "@getpaseo/plugin/client/ui";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { copyText, Icon, useToast } from "@getpaseo/plugin/client/react-native";
+import { SettingsAction, SettingsCard, SettingsSection, SettingsSelect } from "@getpaseo/plugin/client/ui";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import {
+  ActivityIndicator,
+  Pressable,
+  Text,
+  TextInput,
+  View,
+  type StyleProp,
+  type ViewStyle,
+} from "react-native";
 import {
   LABEL_MAX_LENGTH,
   MAX_PROMPTS,
@@ -34,35 +42,50 @@ function fieldError(field: Field, value: string): string | null {
   return QuickPromptSchema.shape[field].safeParse(value).error?.issues[0]?.message ?? null;
 }
 
+const LINE_HEIGHT = 20;
+/** The prompt input grows with its text up to this many lines, then scrolls. */
+const MAX_LINES = 5;
+
 function useStyles(theme: Theme, compact: boolean) {
   return useMemo(
     () => ({
       intro: { color: theme.colors.foregroundMuted, fontSize: 13, lineHeight: 18 },
+      caption: { color: theme.colors.foregroundMuted, fontSize: 12 },
       message: { color: theme.colors.foreground },
       status: { color: theme.colors.foregroundMuted, fontSize: 13 },
       statusError: { color: theme.colors.statusDanger, fontSize: 13 },
-      editor: { paddingHorizontal: compact ? 12 : 16, paddingVertical: compact ? 10 : 12 },
-      input: {
-        padding: 10,
-        borderRadius: 8,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        backgroundColor: theme.colors.surface2,
-        color: theme.colors.foreground,
-        fontSize: 14,
-      },
-      multiline: { minHeight: 88, textAlignVertical: "top" as const },
-      buttons: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8 },
-      button: {
+      editor: { paddingHorizontal: compact ? 12 : 16, paddingVertical: 8 },
+      row: { paddingHorizontal: compact ? 12 : 16, paddingVertical: 8, gap: 6 },
+      line: { flexDirection: "row" as const, alignItems: "flex-start" as const, gap: 6 },
+      labelColumn: compact ? { flex: 1 } : { width: 160 },
+      textColumn: compact ? {} : { flex: 1 },
+      field: {
         paddingHorizontal: 10,
         paddingVertical: 6,
         borderRadius: 6,
         borderWidth: 1,
         borderColor: theme.colors.border,
+        backgroundColor: theme.colors.surface2,
       },
-      buttonDisabled: { opacity: 0.4 },
-      buttonText: { color: theme.colors.foreground, fontSize: 13 },
-      dangerText: { color: theme.colors.statusDanger, fontSize: 13 },
+      input: { padding: 0, color: theme.colors.foreground, fontSize: 14, lineHeight: LINE_HEIGHT },
+      error: { color: theme.colors.statusDanger, fontSize: 12, marginTop: 2 },
+      actions: { flexDirection: "row" as const, gap: 2, paddingTop: 3 },
+      iconButton: {
+        width: 28,
+        height: 28,
+        borderRadius: 6,
+        alignItems: "center" as const,
+        justifyContent: "center" as const,
+      },
+      addButton: {
+        height: 34,
+        paddingHorizontal: 12,
+        borderRadius: 6,
+        justifyContent: "center" as const,
+        backgroundColor: theme.colors.accent,
+      },
+      addText: { color: theme.colors.accentForeground, fontSize: 13 },
+      disabled: { opacity: 0.4 },
       tipPrompt: { color: theme.colors.foreground, fontSize: 13, lineHeight: 18 },
     }),
     [theme, compact],
@@ -71,68 +94,118 @@ function useStyles(theme: Theme, compact: boolean) {
 
 type Styles = ReturnType<typeof useStyles>;
 
-function SmallButton({
-  label,
+function IconButton({
+  icon,
   accessibilityLabel,
-  danger,
+  color,
   disabled,
+  busy,
   styles,
   onPress,
 }: {
-  label: string;
+  icon: string;
   accessibilityLabel: string;
-  danger?: boolean;
+  color: string;
   disabled?: boolean;
+  busy?: boolean;
   styles: Styles;
   onPress(): void;
 }) {
+  const inactive = Boolean(disabled || busy);
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
-      accessibilityState={{ disabled: Boolean(disabled) }}
-      disabled={disabled}
+      accessibilityState={{ disabled: inactive, busy: Boolean(busy) }}
+      disabled={inactive}
+      hitSlop={6}
       onPress={onPress}
-      style={disabled ? [styles.button, styles.buttonDisabled] : styles.button}
+      style={disabled ? [styles.iconButton, styles.disabled] : styles.iconButton}
     >
-      <Text style={danger ? styles.dangerText : styles.buttonText}>{label}</Text>
+      {busy ? <ActivityIndicator size="small" color={color} /> : <Icon name={icon} size={16} color={color} />}
     </Pressable>
   );
 }
 
-interface FieldInputProps {
+/** A bordered input with its validation error underneath when there is one. */
+function CompactInput({
+  field,
+  value,
+  error,
+  accessibilityLabel,
+  style,
+  theme,
+  styles,
+  onChangeText,
+  onBlur,
+}: {
   field: Field;
   value: string;
   error: string | null;
   accessibilityLabel: string;
+  style: StyleProp<ViewStyle>;
   theme: Theme;
   styles: Styles;
   onChangeText(text: string): void;
   onBlur?(): void;
-}
-
-function FieldInput({ field, value, error, accessibilityLabel, theme, styles, onChangeText, onBlur }: FieldInputProps) {
-  const isText = field === "text";
+}) {
+  const multiline = field === "text";
+  // The input has no padding of its own, so its content height is the height of its text.
+  const [contentHeight, setContentHeight] = useState(LINE_HEIGHT);
+  const maxHeight = LINE_HEIGHT * MAX_LINES;
+  const height = multiline ? Math.min(Math.max(contentHeight, LINE_HEIGHT), maxHeight) : LINE_HEIGHT;
   return (
-    <>
-      <SettingsRow
-        label={isText ? "Prompt" : "Label"}
-        hint={isText ? "Sent to the agent as your message." : "Shown on the pill."}
-        error={error}
-      />
-      <View style={styles.editor}>
+    <View style={style}>
+      <View style={styles.field}>
         <TextInput
-          multiline={isText}
+          multiline={multiline}
+          scrollEnabled={multiline && contentHeight > maxHeight}
           accessibilityLabel={accessibilityLabel}
           value={value}
-          placeholder={isText ? "Review the uncommitted changes and list any bugs." : "Review changes"}
+          placeholder={multiline ? "Prompt sent to the agent" : "Label"}
           placeholderTextColor={theme.colors.foregroundMuted}
           onChangeText={onChangeText}
           onBlur={onBlur}
-          style={isText ? [styles.input, styles.multiline] : styles.input}
+          onContentSizeChange={multiline ? (event) => setContentHeight(event.nativeEvent.contentSize.height) : undefined}
+          style={[styles.input, { height }]}
         />
       </View>
-    </>
+      {error ? <Text style={styles.error}>{error}</Text> : null}
+    </View>
+  );
+}
+
+/** One line on wide layouts; on compact ones the label and actions, then the prompt underneath. */
+function PromptRow({
+  compact,
+  label,
+  text,
+  actions,
+  styles,
+}: {
+  compact: boolean;
+  label: ReactNode;
+  text: ReactNode;
+  actions: ReactNode;
+  styles: Styles;
+}) {
+  if (compact) {
+    return (
+      <View style={styles.row}>
+        <View style={styles.line}>
+          {label}
+          {actions}
+        </View>
+        {text}
+      </View>
+    );
+  }
+  return (
+    <View style={[styles.row, styles.line]}>
+      {label}
+      {text}
+      {actions}
+    </View>
   );
 }
 
@@ -140,6 +213,7 @@ function PromptEditor({
   prompt,
   index,
   count,
+  compact,
   state,
   store,
   theme,
@@ -148,21 +222,22 @@ function PromptEditor({
   prompt: QuickPrompt;
   index: number;
   count: number;
+  compact: boolean;
   state: AutosaveState;
   store: Autosave;
   theme: Theme;
   styles: Styles;
 }) {
   const name = prompt.label || `quick prompt ${index + 1}`;
-  const deleting = state.deleting.has(prompt.id);
-  const field = (field: Field, accessibilityLabel: string) => {
+  const input = (field: Field, accessibilityLabel: string) => {
     const draft = state.drafts.get(draftKey(prompt.id, field));
     return (
-      <FieldInput
+      <CompactInput
         field={field}
         value={draft?.text ?? prompt[field]}
         error={draft?.showError ? fieldError(field, draft.text) : null}
         accessibilityLabel={accessibilityLabel}
+        style={field === "label" ? styles.labelColumn : styles.textColumn}
         theme={theme}
         styles={styles}
         onChangeText={(text) => store.setDraft(prompt.id, field, text)}
@@ -171,79 +246,101 @@ function PromptEditor({
     );
   };
   return (
-    <SettingsCard>
-      {field("label", `Label for ${name}`)}
-      {field("text", `Prompt for ${name}`)}
-      <View style={[styles.editor, styles.buttons]}>
-        <SmallButton
-          label="Move up"
-          accessibilityLabel={`Move ${name} up`}
-          disabled={index === 0}
-          styles={styles}
-          onPress={() => void store.save(movePrompt(prompt.id, -1))}
-        />
-        <SmallButton
-          label="Move down"
-          accessibilityLabel={`Move ${name} down`}
-          disabled={index === count - 1}
-          styles={styles}
-          onPress={() => void store.save(movePrompt(prompt.id, 1))}
-        />
-        <SmallButton
-          label={deleting ? "Deleting…" : "Delete"}
-          accessibilityLabel={`Delete ${name}`}
-          danger
-          disabled={deleting}
-          styles={styles}
-          onPress={() => void store.remove(prompt.id)}
-        />
-      </View>
-    </SettingsCard>
+    <PromptRow
+      compact={compact}
+      styles={styles}
+      label={input("label", `Label for ${name}`)}
+      text={input("text", `Prompt for ${name}`)}
+      actions={
+        <View style={styles.actions}>
+          <IconButton
+            icon="ArrowUp"
+            accessibilityLabel={`Move ${name} up`}
+            color={theme.colors.foreground}
+            disabled={index === 0}
+            styles={styles}
+            onPress={() => void store.save(movePrompt(prompt.id, -1))}
+          />
+          <IconButton
+            icon="ArrowDown"
+            accessibilityLabel={`Move ${name} down`}
+            color={theme.colors.foreground}
+            disabled={index === count - 1}
+            styles={styles}
+            onPress={() => void store.save(movePrompt(prompt.id, 1))}
+          />
+          <IconButton
+            icon="Trash2"
+            accessibilityLabel={`Delete ${name}`}
+            color={theme.colors.statusDanger}
+            busy={state.deleting.has(prompt.id)}
+            styles={styles}
+            onPress={() => void store.remove(prompt.id)}
+          />
+        </View>
+      }
+    />
   );
 }
 
-function NewPromptCard({
+function NewPromptRow({
   count,
+  compact,
   state,
   store,
   theme,
   styles,
 }: {
   count: number;
+  compact: boolean;
   state: AutosaveState;
   store: Autosave;
   theme: Theme;
   styles: Styles;
 }) {
   const { label, text, showErrors } = state.newPrompt;
+  const disabled = state.adding || count >= MAX_PROMPTS;
   return (
-    <SettingsCard>
-      <FieldInput
-        field="label"
-        value={label}
-        error={showErrors ? fieldError("label", label) : null}
-        accessibilityLabel="Label for the new quick prompt"
-        theme={theme}
-        styles={styles}
-        onChangeText={(value) => store.setNewPrompt("label", value)}
-      />
-      <FieldInput
-        field="text"
-        value={text}
-        error={showErrors ? fieldError("text", text) : null}
-        accessibilityLabel="Prompt for the new quick prompt"
-        theme={theme}
-        styles={styles}
-        onChangeText={(value) => store.setNewPrompt("text", value)}
-      />
-      <SettingsAction
-        label={count === 0 ? "No quick prompts yet" : `${count} of ${MAX_PROMPTS} quick prompts`}
-        hint={`Labels can be up to ${LABEL_MAX_LENGTH} characters.`}
-        actionLabel={state.adding ? "Adding…" : "Add quick prompt"}
-        disabled={state.adding || count >= MAX_PROMPTS}
-        onPress={() => void store.add()}
-      />
-    </SettingsCard>
+    <PromptRow
+      compact={compact}
+      styles={styles}
+      label={
+        <CompactInput
+          field="label"
+          value={label}
+          error={showErrors ? fieldError("label", label) : null}
+          accessibilityLabel="Label for the new quick prompt"
+          style={styles.labelColumn}
+          theme={theme}
+          styles={styles}
+          onChangeText={(value) => store.setNewPrompt("label", value)}
+        />
+      }
+      text={
+        <CompactInput
+          field="text"
+          value={text}
+          error={showErrors ? fieldError("text", text) : null}
+          accessibilityLabel="Prompt for the new quick prompt"
+          style={styles.textColumn}
+          theme={theme}
+          styles={styles}
+          onChangeText={(value) => store.setNewPrompt("text", value)}
+        />
+      }
+      actions={
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Add quick prompt"
+          accessibilityState={{ disabled, busy: state.adding }}
+          disabled={disabled}
+          onPress={() => void store.add()}
+          style={disabled ? [styles.addButton, styles.disabled] : styles.addButton}
+        >
+          <Text style={styles.addText}>{state.adding ? "Adding…" : "Add"}</Text>
+        </Pressable>
+      }
+    />
   );
 }
 
@@ -407,19 +504,33 @@ function PromptLibrary({
         }}
       />
       <UnsavedEdits state={state} store={store} styles={styles} />
-      {prompts.map((prompt, index) => (
-        <PromptEditor
-          key={prompt.id}
-          prompt={prompt}
-          index={index}
+      <SettingsCard>
+        {prompts.map((prompt, index) => (
+          <PromptEditor
+            key={prompt.id}
+            prompt={prompt}
+            index={index}
+            count={prompts.length}
+            compact={layout.compact}
+            state={state}
+            store={store}
+            theme={theme}
+            styles={styles}
+          />
+        ))}
+        <NewPromptRow
           count={prompts.length}
+          compact={layout.compact}
           state={state}
           store={store}
           theme={theme}
           styles={styles}
         />
-      ))}
-      <NewPromptCard count={prompts.length} state={state} store={store} theme={theme} styles={styles} />
+      </SettingsCard>
+      <Text style={styles.caption}>
+        {prompts.length === 0 ? "No quick prompts yet." : `${prompts.length} of ${MAX_PROMPTS} quick prompts.`} Labels
+        can be up to {LABEL_MAX_LENGTH} characters.
+      </Text>
       <SettingsCard>
         <SettingsSelect
           label="Show prompts as"

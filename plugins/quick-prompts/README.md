@@ -42,10 +42,11 @@ the latest source with `paseo plugin install github:kingsleydon/paseo-plugins:pl
 
 Up to 20 prompts. Leading and trailing whitespace is trimmed when you save.
 
-Delete, **Move up**/**Move down**, and **Show prompts as** save right away. An edited label or
-prompt saves when the field loses focus, if it is valid; an invalid value shows an error on the
-field and is not saved. New prompts are entered in their own form and saved with **Add quick
-prompt**. The section header shows **Saving…**, **Saved**, or **Not saved** for the latest save.
+Each prompt is one compact row: label, prompt text (which grows to five lines, then scrolls), and
+move up, move down, and delete buttons. Moving, deleting, and **Show prompts as** save right away.
+An edited label or prompt saves when the field loses focus, if it is valid; an invalid value shows
+an error under the field and is not saved. New prompts go in the last row and are saved with
+**Add**. The section header shows **Saving…**, **Saved**, or **Not saved** for the latest save.
 
 Saves go to the host one at a time, each applied to the latest prompts. If another app saved in the
 meantime, the change is applied to its prompts and saved again once; when it no longer applies, a
