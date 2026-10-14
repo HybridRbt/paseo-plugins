@@ -1,35 +1,33 @@
-import { useSettings, type PluginSurfaceProps, type SettingsState } from "@getpaseo/plugin/client";
+import { useRpc, useSettings, type PluginSurfaceProps, type SettingsState } from "@getpaseo/plugin/client";
 import { copyText, useToast } from "@getpaseo/plugin/client/react-native";
-import {
-  SettingsAction,
-  SettingsCard,
-  SettingsInput,
-  SettingsRow,
-  SettingsSection,
-  SettingsSelect,
-} from "@getpaseo/plugin/client/ui";
-import { useMemo, useState } from "react";
+import { SettingsAction, SettingsCard, SettingsRow, SettingsSection, SettingsSelect } from "@getpaseo/plugin/client/ui";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import {
   LABEL_MAX_LENGTH,
   MAX_PROMPTS,
   newPromptId,
+  QuickPromptSchema,
   quickPromptsSettings,
   TEXT_MAX_LENGTH,
   type PromptDisplay,
   type QuickPrompt,
-  type QuickPromptsSettings,
 } from "../shared/prompts";
+import {
+  addPrompt,
+  deletePrompt,
+  movePrompt,
+  saveEdit,
+  setDisplay,
+  settingsContract,
+  updatePrompt,
+  type Edit,
+  type SettingsDoc,
+} from "./edits";
 
 type ReadySettings = Extract<SettingsState<typeof quickPromptsSettings.schema>, { status: "ready" }>;
 type Theme = PluginSurfaceProps["theme"];
 type Field = "label" | "text";
-
-/** Unsaved edits with the revision they started from, so a save over another client's change conflicts. */
-interface Draft {
-  values: QuickPromptsSettings;
-  revision: string;
-}
 
 const DISPLAY_OPTIONS: ReadonlyArray<{ label: string; value: PromptDisplay }> = [
   { label: "Separate pills", value: "pills" },
@@ -42,35 +40,18 @@ const FIND_PROMPTS_PROMPT =
   "for me. For each one give a short label (40 characters or fewer) and the full prompt text, written so " +
   "it works for any task. Do not change anything; just list them so I can add them in Quick prompts.";
 
-interface Validation {
-  valid: boolean;
-  fields: Array<Partial<Record<Field, string>>>;
-  list: string | null;
-}
-
-function validate(values: QuickPromptsSettings): Validation {
-  const parsed = quickPromptsSettings.schema.safeParse(values);
-  const fields: Validation["fields"] = values.prompts.map(() => ({}));
-  let list: string | null = null;
-  for (const issue of parsed.error?.issues ?? []) {
-    const [, index, field] = issue.path;
-    if (typeof index === "number" && (field === "label" || field === "text")) {
-      fields[index] = { ...fields[index], [field]: fields[index]?.[field] ?? issue.message };
-    } else {
-      list ??= issue.message;
-    }
-  }
-  return { valid: parsed.success, fields, list };
+/** The first validation message for one field, or `null` when it would save. */
+function fieldError(field: Field, value: string): string | null {
+  return QuickPromptSchema.shape[field].safeParse(value).error?.issues[0]?.message ?? null;
 }
 
 function useStyles(theme: Theme, compact: boolean) {
   return useMemo(
     () => ({
       intro: { color: theme.colors.foregroundMuted, fontSize: 13, lineHeight: 18 },
-      message: { color: theme.colors.foreground },
+      status: { color: theme.colors.foregroundMuted, fontSize: 13 },
       editor: { paddingHorizontal: compact ? 12 : 16, paddingVertical: compact ? 10 : 12 },
-      textInput: {
-        minHeight: 88,
+      input: {
         padding: 10,
         borderRadius: 8,
         borderWidth: 1,
@@ -78,8 +59,8 @@ function useStyles(theme: Theme, compact: boolean) {
         backgroundColor: theme.colors.surface2,
         color: theme.colors.foreground,
         fontSize: 14,
-        textAlignVertical: "top" as const,
       },
+      multiline: { minHeight: 88, textAlignVertical: "top" as const },
       buttons: { flexDirection: "row" as const, flexWrap: "wrap" as const, gap: 8 },
       button: {
         paddingHorizontal: 10,
@@ -128,82 +109,206 @@ function SmallButton({
   );
 }
 
+interface FieldInputProps {
+  field: Field;
+  value: string;
+  error: string | null;
+  accessibilityLabel: string;
+  theme: Theme;
+  styles: Styles;
+  onChangeText(text: string): void;
+  onBlur?(): void;
+}
+
+function FieldInput({ field, value, error, accessibilityLabel, theme, styles, onChangeText, onBlur }: FieldInputProps) {
+  const isText = field === "text";
+  return (
+    <>
+      <SettingsRow
+        label={isText ? "Prompt" : "Label"}
+        hint={isText ? "Sent to the agent as your message." : "Shown on the pill."}
+        error={error}
+      />
+      <View style={styles.editor}>
+        <TextInput
+          multiline={isText}
+          accessibilityLabel={accessibilityLabel}
+          value={value}
+          maxLength={isText ? TEXT_MAX_LENGTH : undefined}
+          placeholder={isText ? "Review the uncommitted changes and list any bugs." : "Review changes"}
+          placeholderTextColor={theme.colors.foregroundMuted}
+          onChangeText={onChangeText}
+          onBlur={onBlur}
+          style={isText ? [styles.input, styles.multiline] : styles.input}
+        />
+      </View>
+    </>
+  );
+}
+
+/**
+ * A saved prompt's field. Typed text stays local, so another client's save never replaces it, and
+ * saves when the field loses focus or unmounts if it changed and is valid.
+ */
+function SavedField({
+  saved,
+  onCommit,
+  ...props
+}: Omit<FieldInputProps, "value" | "error" | "onChangeText" | "onBlur"> & {
+  saved: string;
+  onCommit(value: string): Promise<boolean>;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [showError, setShowError] = useState(false);
+
+  const commit = async (): Promise<void> => {
+    if (draft === null) return;
+    const parsed = QuickPromptSchema.shape[props.field].safeParse(draft);
+    if (!parsed.success) {
+      setShowError(true);
+      return;
+    }
+    if (parsed.data === saved || (await onCommit(parsed.data))) {
+      // Keep text typed while the save was in flight.
+      setDraft((current) => (current === draft ? null : current));
+      setShowError(false);
+    }
+  };
+  const latestCommit = useRef(commit);
+  latestCommit.current = commit;
+  useEffect(() => () => void latestCommit.current(), []);
+
+  return (
+    <FieldInput
+      {...props}
+      value={draft ?? saved}
+      error={showError && draft !== null ? fieldError(props.field, draft) : null}
+      onChangeText={setDraft}
+      onBlur={() => void commit()}
+    />
+  );
+}
+
 function PromptEditor({
   prompt,
   index,
   count,
-  errors,
-  inputKey,
-  disabled,
   theme,
   styles,
-  onChange,
-  onMove,
-  onDelete,
+  commit,
 }: {
   prompt: QuickPrompt;
   index: number;
   count: number;
-  errors: Partial<Record<Field, string>>;
-  inputKey: string;
-  disabled: boolean;
   theme: Theme;
   styles: Styles;
-  onChange(field: Field, value: string): void;
-  onMove(offset: -1 | 1): void;
-  onDelete(): void;
+  commit(edit: Edit): Promise<boolean>;
 }) {
-  const name = prompt.label.trim() || `quick prompt ${index + 1}`;
+  const name = prompt.label || `quick prompt ${index + 1}`;
   return (
     <SettingsCard>
-      <SettingsInput
-        key={inputKey}
-        label="Label"
-        hint="Shown on the pill."
-        initialValue={prompt.label}
-        placeholder="Review changes"
-        error={errors.label}
-        disabled={disabled}
-        onChangeText={(text) => onChange("label", text)}
+      <SavedField
+        field="label"
+        saved={prompt.label}
+        accessibilityLabel={`Label for ${name}`}
+        theme={theme}
+        styles={styles}
+        onCommit={(value) => commit(updatePrompt(prompt.id, "label", value))}
       />
-      <SettingsRow label="Prompt" hint="Sent to the agent as your message." error={errors.text} />
-      <View style={styles.editor}>
-        <TextInput
-          multiline
-          accessibilityLabel={`Prompt for ${name}`}
-          value={prompt.text}
-          editable={!disabled}
-          maxLength={TEXT_MAX_LENGTH}
-          placeholder="Review the uncommitted changes and list any bugs."
-          placeholderTextColor={theme.colors.foregroundMuted}
-          onChangeText={(text) => onChange("text", text)}
-          style={styles.textInput}
-        />
-      </View>
+      <SavedField
+        field="text"
+        saved={prompt.text}
+        accessibilityLabel={`Prompt for ${name}`}
+        theme={theme}
+        styles={styles}
+        onCommit={(value) => commit(updatePrompt(prompt.id, "text", value))}
+      />
       <View style={[styles.editor, styles.buttons]}>
         <SmallButton
           label="Move up"
           accessibilityLabel={`Move ${name} up`}
-          disabled={disabled || index === 0}
+          disabled={index === 0}
           styles={styles}
-          onPress={() => onMove(-1)}
+          onPress={() => void commit(movePrompt(prompt.id, -1))}
         />
         <SmallButton
           label="Move down"
           accessibilityLabel={`Move ${name} down`}
-          disabled={disabled || index === count - 1}
+          disabled={index === count - 1}
           styles={styles}
-          onPress={() => onMove(1)}
+          onPress={() => void commit(movePrompt(prompt.id, 1))}
         />
         <SmallButton
           label="Delete"
           accessibilityLabel={`Delete ${name}`}
           danger
-          disabled={disabled}
           styles={styles}
-          onPress={onDelete}
+          onPress={() => void commit(deletePrompt(prompt.id))}
         />
       </View>
+    </SettingsCard>
+  );
+}
+
+function NewPromptCard({
+  count,
+  theme,
+  styles,
+  commit,
+}: {
+  count: number;
+  theme: Theme;
+  styles: Styles;
+  commit(edit: Edit): Promise<boolean>;
+}) {
+  const [label, setLabel] = useState("");
+  const [text, setText] = useState("");
+  const [showErrors, setShowErrors] = useState(false);
+  const [adding, setAdding] = useState(false);
+
+  const add = async (): Promise<void> => {
+    const parsed = QuickPromptSchema.safeParse({ id: newPromptId(), label, text });
+    if (!parsed.success) {
+      setShowErrors(true);
+      return;
+    }
+    setAdding(true);
+    const added = await commit(addPrompt(parsed.data));
+    setAdding(false);
+    if (added) {
+      setLabel("");
+      setText("");
+      setShowErrors(false);
+    }
+  };
+
+  return (
+    <SettingsCard>
+      <FieldInput
+        field="label"
+        value={label}
+        error={showErrors ? fieldError("label", label) : null}
+        accessibilityLabel="Label for the new quick prompt"
+        theme={theme}
+        styles={styles}
+        onChangeText={setLabel}
+      />
+      <FieldInput
+        field="text"
+        value={text}
+        error={showErrors ? fieldError("text", text) : null}
+        accessibilityLabel="Prompt for the new quick prompt"
+        theme={theme}
+        styles={styles}
+        onChangeText={setText}
+      />
+      <SettingsAction
+        label={count === 0 ? "No quick prompts yet" : `${count} of ${MAX_PROMPTS} quick prompts`}
+        hint={`Labels can be up to ${LABEL_MAX_LENGTH} characters.`}
+        actionLabel={adding ? "Adding…" : "Add quick prompt"}
+        disabled={adding || count >= MAX_PROMPTS}
+        onPress={() => void add()}
+      />
     </SettingsCard>
   );
 }
@@ -237,50 +342,63 @@ function FindPromptsTip({ styles }: { styles: Styles }) {
 
 function PromptLibrary({ settings, theme, layout }: { settings: ReadySettings } & PluginSurfaceProps) {
   const styles = useStyles(theme, layout.compact);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  // Remounts the label inputs, which own their text, when a draft is discarded.
-  const [generation, setGeneration] = useState(0);
+  const toast = useToast();
+  const write = useRpc(settingsContract.write);
+  const read = useRpc(settingsContract.read);
+  const [doc, setDocState] = useState<SettingsDoc>({ values: settings.values, revision: settings.revision });
+  // The latest known values and revision, which each queued save starts from.
+  const latest = useRef(doc);
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const [pending, setPending] = useState(0);
+  const [saved, setSaved] = useState(false);
 
-  const saved = settings.values;
-  const isChanged = (candidate: Draft | null): candidate is Draft =>
-    candidate !== null &&
-    (candidate.values.display !== saved.display ||
-      JSON.stringify(candidate.values.prompts) !== JSON.stringify(saved.prompts));
-  // A draft edited back to the saved settings is no draft: show live values again.
-  const editing = isChanged(draft) ? draft : null;
-  const values = editing?.values ?? saved;
-  const prompts = values.prompts;
-  const validation = validate(values);
-  const disabled = settings.saving;
-  const inputKeyPrefix = `${editing?.revision ?? settings.revision}-${generation}`;
+  const setDoc = (next: SettingsDoc): void => {
+    latest.current = next;
+    setDocState(next);
+  };
 
-  const editValues = (change: (current: QuickPromptsSettings) => QuickPromptsSettings): void => {
-    setDraft((current) => {
-      const base = isChanged(current) ? current : { values: saved, revision: settings.revision };
-      return { ...base, values: change(base.values) };
+  // Another client's save or a reload. Fields being typed in keep their text.
+  useEffect(() => {
+    if (settings.revision !== latest.current.revision) {
+      setDoc({ values: settings.values, revision: settings.revision });
+    }
+  }, [settings.revision]);
+
+  /** Saves one change after any earlier ones; resolves whether it was saved. */
+  const commit = (edit: Edit): Promise<boolean> => {
+    setPending((count) => count + 1);
+    const run = queue.current.then(async () => {
+      const outcome = await saveEdit(edit, latest.current, { write, read: () => read({}) });
+      setPending((count) => count - 1);
+      switch (outcome.status) {
+        case "saved":
+          setDoc(outcome.doc);
+          setSaved(true);
+          return true;
+        case "unchanged":
+          return false;
+        case "stale":
+          setDoc(outcome.doc);
+          toast.error("Quick prompts changed elsewhere, so this change was not saved.");
+          return false;
+        case "failed":
+          console.error("[paseo-quick-prompts] failed to save quick prompts", outcome.error);
+          toast.error("Could not save quick prompts. Try again.");
+          return false;
+      }
     });
-  };
-  const edit = (change: (current: QuickPrompt[]) => QuickPrompt[]): void =>
-    editValues((current) => ({ ...current, prompts: change(current.prompts) }));
-
-  const discard = (): void => {
-    setDraft(null);
-    setGeneration((value) => value + 1);
-    void settings.reload();
+    queue.current = run;
+    return run;
   };
 
-  const save = async (): Promise<void> => {
-    if (!editing) return;
-    const parsed = quickPromptsSettings.schema.safeParse(editing.values);
-    if (!parsed.success) return;
-    if (await settings.save(parsed.data, editing.revision)) setDraft(null);
-  };
+  const prompts = doc.values.prompts;
+  const status = pending > 0 ? "Saving…" : saved ? "Saved" : null;
 
   return (
-    <SettingsSection title="Quick prompts">
+    <SettingsSection title="Quick prompts" trailing={status ? <Text style={styles.status}>{status}</Text> : undefined}>
       <Text style={styles.intro}>
         Quick prompts appear above every agent's composer, as separate pills or in one Prompts menu. Choosing one
-        sends the prompt to that agent as your message.
+        sends the prompt to that agent as your message. Changes save automatically.
       </Text>
       {prompts.map((prompt, index) => (
         <PromptEditor
@@ -288,56 +406,21 @@ function PromptLibrary({ settings, theme, layout }: { settings: ReadySettings } 
           prompt={prompt}
           index={index}
           count={prompts.length}
-          errors={validation.fields[index] ?? {}}
-          inputKey={`${prompt.id}-${inputKeyPrefix}`}
-          disabled={disabled}
           theme={theme}
           styles={styles}
-          onChange={(field, value) =>
-            edit((current) => current.map((item) => (item.id === prompt.id ? { ...item, [field]: value } : item)))
-          }
-          onMove={(offset) =>
-            edit((current) => {
-              const next = [...current];
-              const [moved] = next.splice(index, 1);
-              if (moved) next.splice(index + offset, 0, moved);
-              return next;
-            })
-          }
-          onDelete={() => edit((current) => current.filter((item) => item.id !== prompt.id))}
+          commit={commit}
         />
       ))}
-      <SettingsCard>
-        <SettingsAction
-          label={prompts.length === 0 ? "No quick prompts yet" : `${prompts.length} of ${MAX_PROMPTS} quick prompts`}
-          hint={`Labels can be up to ${LABEL_MAX_LENGTH} characters.`}
-          actionLabel="Add quick prompt"
-          disabled={disabled || prompts.length >= MAX_PROMPTS}
-          onPress={() => edit((current) => [...current, { id: newPromptId(), label: "", text: "" }])}
-        />
-      </SettingsCard>
+      <NewPromptCard count={prompts.length} theme={theme} styles={styles} commit={commit} />
       <SettingsCard>
         <SettingsSelect
           label="Show prompts as"
           hint="Separate pills show one pill per prompt; one menu pill keeps them in a single menu."
-          value={values.display}
+          value={doc.values.display}
           options={DISPLAY_OPTIONS}
-          disabled={disabled}
-          onValueChange={(display) => editValues((current) => ({ ...current, display }))}
+          onValueChange={(display) => void commit(setDisplay(display))}
         />
       </SettingsCard>
-      {editing ? (
-        <SettingsCard>
-          <SettingsAction
-            label="Unsaved changes"
-            error={settings.saveError ?? validation.list}
-            actionLabel={disabled ? "Saving…" : "Save"}
-            disabled={disabled || !validation.valid}
-            onPress={() => void save()}
-          />
-          <SettingsAction label="Discard changes" actionLabel="Discard" disabled={disabled} onPress={discard} />
-        </SettingsCard>
-      ) : null}
       <FindPromptsTip styles={styles} />
     </SettingsSection>
   );

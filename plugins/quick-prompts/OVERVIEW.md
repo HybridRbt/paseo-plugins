@@ -4,7 +4,7 @@ Use it for prompts you repeat across agents, such as "Review the uncommitted cha
 
 ## Settings
 
-Open **Settings → Plugins → paseo-quick-prompts → Quick prompts** to add, edit, reorder, and delete prompts and to choose how they appear. Each one has a label, shown on the pill or menu item, and the prompt text that is sent. Changes apply after you press **Save**; **Discard** returns to the saved settings.
+Open **Settings → Plugins → paseo-quick-prompts → Quick prompts** to add, edit, reorder, and delete prompts and to choose how they appear. Each one has a label, shown on the pill or menu item, and the prompt text that is sent. Changes save automatically: deleting, reordering, and the display option save right away, and an edited label or prompt saves when you leave the field. New prompts are added with **Add quick prompt**.
 
 - Up to 20 prompts. Labels can be up to 40 characters.
 - **Show prompts as** picks **Separate pills** (the default) or **One menu pill**. Either way, prompts follow the order of the list, on every agent that belongs to a workspace. The menu also has a **Manage prompts** item that opens the settings page.

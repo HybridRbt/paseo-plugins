@@ -11,7 +11,7 @@ agent as a normal user message.
 - **One pill per prompt** on every agent with a workspace, in the order you set, or **one menu
   pill** (Prompts) that lists them all with a **Manage prompts** shortcut.
 - **Settings screen** under **Settings → Plugins → paseo-quick-prompts → Quick prompts** to add, edit, reorder, and delete
-  prompts and choose how they appear, with explicit **Save** and **Discard**.
+  prompts and choose how they appear. Changes save automatically.
 - **Prompt ideas.** A copyable prompt on the settings screen asks an agent to read your Paseo agent
   history and suggest the quick prompts you would use most.
 - **Shared per host.** Prompts are stored on the daemon and every connected app sees the same list;
@@ -41,6 +41,13 @@ the latest source with `paseo plugin install github:kingsleydon/paseo-plugins:pl
 | Prompt | 1–10,000 characters | Message sent to the agent |
 
 Up to 20 prompts. Leading and trailing whitespace is trimmed when you save.
+
+Delete, **Move up**/**Move down**, and **Show prompts as** save right away. An edited label or
+prompt saves when the field loses focus, if it is valid; an invalid value shows an error on the
+field and is not saved. New prompts are entered in their own form and saved with **Add quick
+prompt**. If another app saved in the meantime, the change is applied to the latest prompts and
+saved again; when it no longer applies (for example, the prompt was deleted), a toast says so and
+the latest prompts are shown.
 
 **Show prompts as** is **Separate pills** (default) or **One menu pill**. Settings saved before this
 option existed keep separate pills.
@@ -75,7 +82,8 @@ paseo plugin logs paseo-quick-prompts
 | `index.client.tsx` | App entry: settings screen and composer pills |
 | `client/pills.ts` | Keeps each agent's pills in sync with the saved prompts |
 | `client/follow.ts` | Follows the agent directory and settings changes |
-| `client/settings-screen.tsx` | Draft editor for the prompts and display option, and the prompt-ideas tip |
+| `client/settings-screen.tsx` | Autosaving editor for the prompts and display option, and the prompt-ideas tip |
+| `client/edits.ts` | Prompt edits and the save that retries once after a conflict |
 | `shared/prompts.ts` | Settings schema and limits |
 
 ## Releasing
