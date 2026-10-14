@@ -62,6 +62,20 @@ export function createPromptPills(host: PromptPillHost): PromptPills {
   /** Agents that get pills, by id, with their workspace. */
   const targets = new Map<string, string>();
   const registered = new Map<string, AgentPills>();
+  /**
+   * Sends in flight by agent and prompt. Kept outside the registrations, which a reorder or display
+   * switch replaces, so a replacement pill cannot send the same prompt again before the first settles.
+   */
+  const sending = new Map<string, Promise<void>>();
+
+  const send = (agentId: string, prompt: QuickPrompt): Promise<void> => {
+    const key = JSON.stringify([agentId, prompt.id]);
+    const current = sending.get(key);
+    if (current) return current;
+    const next = host.send(agentId, prompt.text).finally(() => sending.delete(key));
+    sending.set(key, next);
+    return next;
+  };
 
   const addSpec: PillSpec = {
     id: ADD_PILL_ID,
@@ -82,7 +96,7 @@ export function createPromptPills(host: PromptPillHost): PromptPills {
       icon: "Zap",
       label: prompt.label,
       // Paseo marks the pill busy until the send settles and shows a failure in a toast.
-      behavior: { kind: "action", onPress: () => host.send(agentId, prompt.text) },
+      behavior: { kind: "action", onPress: () => send(agentId, prompt) },
     }),
   });
 
@@ -100,7 +114,7 @@ export function createPromptPills(host: PromptPillHost): PromptPills {
             kind: "item" as const,
             id: `prompt-${prompt.id}`,
             title: prompt.label,
-            behavior: { kind: "action" as const, onPress: () => host.send(agentId, prompt.text) },
+            behavior: { kind: "action" as const, onPress: () => send(agentId, prompt) },
           })),
           { kind: "separator", id: "manage-divider" },
           {
