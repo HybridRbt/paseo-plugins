@@ -4,5 +4,10 @@
   "description": "Saved prompts as one-tap pills above every agent's composer.",
   "requirements": {
     "paseo": ">=0.11.0"
-  }
+  },
+  "media": [
+    "assets/pills.png",
+    "assets/menu.png",
+    "assets/settings.png"
+  ]
 }

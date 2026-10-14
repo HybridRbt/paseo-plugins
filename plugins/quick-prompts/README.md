@@ -6,6 +6,16 @@ Save the messages you send often, like "Review the uncommitted changes" or "Run 
 failures". Each one becomes a pill above every agent's composer; tapping it sends the prompt to that
 agent as a normal user message.
 
+## Screenshots
+
+![Review diff, Status, Continue, and Commit + PR pills above an agent's composer](assets/pills.png)
+
+![The single Prompts menu pill open, listing the saved prompts and Manage prompts](assets/menu.png)
+
+![The Quick prompts settings screen with four prompt rows, Show prompts as, and the prompt-ideas tip](assets/settings.png)
+
+<p align="center"><img src="assets/settings-light.png" width="320" alt="The Quick prompts settings screen in the light theme on a narrow window"></p>
+
 ## Features
 
 - **One pill per prompt** on every agent with a workspace, in the order you set, or **one menu
@@ -93,6 +103,7 @@ paseo plugin logs paseo-quick-prompts
 | `client/autosave.ts` | Save queue for the settings screen: latest values, typed drafts, the new-prompt form, conflict retry |
 | `client/edits.ts` | Prompt edits applied to the latest values |
 | `shared/prompts.ts` | Settings schema and limits |
+| `assets/` | Screenshots for this README and the plugin listing (`media` in `paseo-plugin.json`) |
 
 ## Releasing
 
