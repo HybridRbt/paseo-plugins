@@ -33,11 +33,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kingsleydon/paseo-recap.git"
+    "url": "git+https://github.com/kingsleydon/paseo-plugins.git",
+    "directory": "plugins/recap"
   },
-  "homepage": "https://github.com/kingsleydon/paseo-recap#readme",
+  "homepage": "https://github.com/kingsleydon/paseo-plugins/tree/main/plugins/recap#readme",
   "bugs": {
-    "url": "https://github.com/kingsleydon/paseo-recap/issues"
+    "url": "https://github.com/kingsleydon/paseo-plugins/issues"
   },
   "keywords": [
     "paseo",

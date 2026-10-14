@@ -1,0 +1,46 @@
+{
+  "name": "paseo-quick-prompts",
+  "version": "0.1.0",
+  "description": "Saved prompts as one-tap pills above every agent's composer.",
+  "license": "MIT",
+  "files": [
+    "paseo-plugin.json",
+    "OVERVIEW.md",
+    "index.client.ts",
+    "index.client.tsx",
+    "index.server.ts",
+    "index.server.tsx",
+    "client/",
+    "server/",
+    "shared/"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "0.11.2",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/react": "~19.2.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7",
+    "zod": "^4.4.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kingsleydon/paseo-plugins.git",
+    "directory": "plugins/quick-prompts"
+  },
+  "homepage": "https://github.com/kingsleydon/paseo-plugins/tree/main/plugins/quick-prompts#readme",
+  "bugs": {
+    "url": "https://github.com/kingsleydon/paseo-plugins/issues"
+  },
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "prompts"
+  ],
+  "author": "Kingsley (https://github.com/kingsleydon)"
+}
