@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { MAX_PROMPTS, promptsFromSettings, quickPromptsSettings } from "../shared/prompts";
+import { MAX_PROMPTS, quickPromptsSettings, settingsFromRead } from "../shared/prompts";
 
 const parse = (prompts: unknown) => quickPromptsSettings.schema.safeParse({ prompts });
 const prompt = (id: string, label = "Review", text = "Review the changes.") => ({ id, label, text });
 
 describe("quickPromptsSettings", () => {
   it("starts empty and trims saved labels and prompts", () => {
-    expect(quickPromptsSettings.schema.parse({})).toEqual({ prompts: [] });
+    expect(quickPromptsSettings.schema.parse({})).toEqual({ prompts: [], display: "pills" });
     expect(parse([prompt("a1", "  Review ", " Look again.\n")]).data?.prompts).toEqual([
       prompt("a1", "Review", "Look again."),
     ]);
@@ -27,9 +27,18 @@ describe("quickPromptsSettings", () => {
     expect(parse(many).success).toBe(false);
   });
 
-  it("treats invalid stored data as no prompts", () => {
-    expect(promptsFromSettings({ status: "ready", values: { prompts: [prompt("a1")] } })).toEqual([prompt("a1")]);
-    expect(promptsFromSettings({ status: "ready", values: { prompts: [prompt("a1", "")] } })).toEqual([]);
-    expect(promptsFromSettings({ status: "invalid" })).toEqual([]);
+  it("keeps separate pills for documents saved before the display setting, and rejects unknown displays", () => {
+    expect(settingsFromRead({ status: "ready", values: { prompts: [prompt("a1")] } })).toEqual({
+      prompts: [prompt("a1")],
+      display: "pills",
+    });
+    expect(quickPromptsSettings.schema.safeParse({ display: "menu" }).data?.display).toBe("menu");
+    expect(quickPromptsSettings.schema.safeParse({ display: "grid" }).success).toBe(false);
+  });
+
+  it("treats invalid stored data as the defaults", () => {
+    const defaults = { prompts: [], display: "pills" };
+    expect(settingsFromRead({ status: "ready", values: { prompts: [prompt("a1", "")] } })).toEqual(defaults);
+    expect(settingsFromRead({ status: "invalid" })).toEqual(defaults);
   });
 });

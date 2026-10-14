@@ -1,6 +1,6 @@
 import { settingsRpc } from "@getpaseo/plugin";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { promptsFromSettings, quickPromptsSettings } from "../shared/prompts";
+import { quickPromptsSettings, settingsFromRead } from "../shared/prompts";
 import type { PromptPills } from "./pills";
 
 type Client = Pick<PluginClientContext, "paseo" | "rpc">;
@@ -33,7 +33,7 @@ export function followPrompts(client: Client, pills: PromptPills, signal: AbortS
     const request = ++latest;
     try {
       const result = await client.rpc(read, {});
-      if (!signal.aborted && request === latest) pills.setPrompts(promptsFromSettings(result));
+      if (!signal.aborted && request === latest) pills.setSettings(settingsFromRead(result));
     } catch (error) {
       if (!signal.aborted) console.error("[paseo-quick-prompts] failed to load quick prompts", error);
     }

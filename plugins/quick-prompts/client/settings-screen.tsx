@@ -1,5 +1,13 @@
 import { useSettings, type PluginSurfaceProps, type SettingsState } from "@getpaseo/plugin/client";
-import { SettingsAction, SettingsCard, SettingsInput, SettingsRow, SettingsSection } from "@getpaseo/plugin/client/ui";
+import { copyText, useToast } from "@getpaseo/plugin/client/react-native";
+import {
+  SettingsAction,
+  SettingsCard,
+  SettingsInput,
+  SettingsRow,
+  SettingsSection,
+  SettingsSelect,
+} from "@getpaseo/plugin/client/ui";
 import { useMemo, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import {
@@ -8,7 +16,9 @@ import {
   newPromptId,
   quickPromptsSettings,
   TEXT_MAX_LENGTH,
+  type PromptDisplay,
   type QuickPrompt,
+  type QuickPromptsSettings,
 } from "../shared/prompts";
 
 type ReadySettings = Extract<SettingsState<typeof quickPromptsSettings.schema>, { status: "ready" }>;
@@ -17,9 +27,20 @@ type Field = "label" | "text";
 
 /** Unsaved edits with the revision they started from, so a save over another client's change conflicts. */
 interface Draft {
-  prompts: QuickPrompt[];
+  values: QuickPromptsSettings;
   revision: string;
 }
+
+const DISPLAY_OPTIONS: ReadonlyArray<{ label: string; value: PromptDisplay }> = [
+  { label: "Separate pills", value: "pills" },
+  { label: "One menu pill", value: "menu" },
+];
+
+const FIND_PROMPTS_PROMPT =
+  "Look through my past Paseo agent sessions using the Paseo tools (list my agents and read their " +
+  "activity) and find the follow-up messages I send most often. Suggest the 5 most useful quick prompts " +
+  "for me. For each one give a short label (40 characters or fewer) and the full prompt text, written so " +
+  "it works for any task. Do not change anything; just list them so I can add them in Quick prompts.";
 
 interface Validation {
   valid: boolean;
@@ -27,9 +48,9 @@ interface Validation {
   list: string | null;
 }
 
-function validate(prompts: QuickPrompt[]): Validation {
-  const parsed = quickPromptsSettings.schema.safeParse({ prompts });
-  const fields: Validation["fields"] = prompts.map(() => ({}));
+function validate(values: QuickPromptsSettings): Validation {
+  const parsed = quickPromptsSettings.schema.safeParse(values);
+  const fields: Validation["fields"] = values.prompts.map(() => ({}));
   let list: string | null = null;
   for (const issue of parsed.error?.issues ?? []) {
     const [, index, field] = issue.path;
@@ -70,6 +91,7 @@ function useStyles(theme: Theme, compact: boolean) {
       buttonDisabled: { opacity: 0.4 },
       buttonText: { color: theme.colors.foreground, fontSize: 13 },
       dangerText: { color: theme.colors.statusDanger, fontSize: 13 },
+      tipPrompt: { color: theme.colors.foreground, fontSize: 13, lineHeight: 18 },
     }),
     [theme, compact],
   );
@@ -186,28 +208,60 @@ function PromptEditor({
   );
 }
 
+function FindPromptsTip({ styles }: { styles: Styles }) {
+  const toast = useToast();
+  const copy = async (): Promise<void> => {
+    try {
+      await copyText(FIND_PROMPTS_PROMPT);
+      toast.show("Copied", { variant: "success" });
+    } catch {
+      toast.error("Could not copy. Select the text and use Copy.");
+    }
+  };
+  return (
+    <SettingsCard>
+      <SettingsAction
+        label="Not sure what to add?"
+        hint="Ask an agent to look through your past sessions and suggest your most useful quick prompts."
+        actionLabel="Copy prompt"
+        onPress={() => void copy()}
+      />
+      <View style={styles.editor}>
+        <Text selectable style={styles.tipPrompt}>
+          {FIND_PROMPTS_PROMPT}
+        </Text>
+      </View>
+    </SettingsCard>
+  );
+}
+
 function PromptLibrary({ settings, theme, layout }: { settings: ReadySettings } & PluginSurfaceProps) {
   const styles = useStyles(theme, layout.compact);
   const [draft, setDraft] = useState<Draft | null>(null);
   // Remounts the label inputs, which own their text, when a draft is discarded.
   const [generation, setGeneration] = useState(0);
 
-  const saved = settings.values.prompts;
+  const saved = settings.values;
   const isChanged = (candidate: Draft | null): candidate is Draft =>
-    candidate !== null && JSON.stringify(candidate.prompts) !== JSON.stringify(saved);
-  // A draft edited back to the saved prompts is no draft: show live values again.
+    candidate !== null &&
+    (candidate.values.display !== saved.display ||
+      JSON.stringify(candidate.values.prompts) !== JSON.stringify(saved.prompts));
+  // A draft edited back to the saved settings is no draft: show live values again.
   const editing = isChanged(draft) ? draft : null;
-  const prompts = editing?.prompts ?? saved;
-  const validation = validate(prompts);
+  const values = editing?.values ?? saved;
+  const prompts = values.prompts;
+  const validation = validate(values);
   const disabled = settings.saving;
   const inputKeyPrefix = `${editing?.revision ?? settings.revision}-${generation}`;
 
-  const edit = (change: (current: QuickPrompt[]) => QuickPrompt[]): void => {
+  const editValues = (change: (current: QuickPromptsSettings) => QuickPromptsSettings): void => {
     setDraft((current) => {
-      const base = isChanged(current) ? current : { prompts: saved, revision: settings.revision };
-      return { ...base, prompts: change(base.prompts) };
+      const base = isChanged(current) ? current : { values: saved, revision: settings.revision };
+      return { ...base, values: change(base.values) };
     });
   };
+  const edit = (change: (current: QuickPrompt[]) => QuickPrompt[]): void =>
+    editValues((current) => ({ ...current, prompts: change(current.prompts) }));
 
   const discard = (): void => {
     setDraft(null);
@@ -217,7 +271,7 @@ function PromptLibrary({ settings, theme, layout }: { settings: ReadySettings } 
 
   const save = async (): Promise<void> => {
     if (!editing) return;
-    const parsed = quickPromptsSettings.schema.safeParse({ prompts: editing.prompts });
+    const parsed = quickPromptsSettings.schema.safeParse(editing.values);
     if (!parsed.success) return;
     if (await settings.save(parsed.data, editing.revision)) setDraft(null);
   };
@@ -225,9 +279,19 @@ function PromptLibrary({ settings, theme, layout }: { settings: ReadySettings } 
   return (
     <SettingsSection title="Quick prompts">
       <Text style={styles.intro}>
-        Each quick prompt adds a pill above every agent's composer. Tapping the pill sends the prompt to that agent
-        as your message.
+        Quick prompts appear above every agent's composer, as separate pills or in one Prompts menu. Choosing one
+        sends the prompt to that agent as your message.
       </Text>
+      <SettingsCard>
+        <SettingsSelect
+          label="Show prompts as"
+          hint="Separate pills show one pill per prompt; one menu pill keeps them in a single menu."
+          value={values.display}
+          options={DISPLAY_OPTIONS}
+          disabled={disabled}
+          onValueChange={(display) => editValues((current) => ({ ...current, display }))}
+        />
+      </SettingsCard>
       {prompts.map((prompt, index) => (
         <PromptEditor
           key={prompt.id}
@@ -262,6 +326,7 @@ function PromptLibrary({ settings, theme, layout }: { settings: ReadySettings } 
           onPress={() => edit((current) => [...current, { id: newPromptId(), label: "", text: "" }])}
         />
       </SettingsCard>
+      <FindPromptsTip styles={styles} />
       {editing ? (
         <SettingsCard>
           <SettingsAction

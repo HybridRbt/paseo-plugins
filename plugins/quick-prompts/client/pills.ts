@@ -3,9 +3,10 @@ import type {
   PluginButtonRegistration,
   PluginComposerPillContribution,
 } from "@getpaseo/plugin/client";
-import type { QuickPrompt } from "../shared/prompts";
+import type { QuickPrompt, QuickPromptsSettings } from "../shared/prompts";
 
 const ADD_PILL_ID = "add-quick-prompt";
+const MENU_PILL_ID = "quick-prompts";
 
 export interface PromptPillHost {
   addComposerPill(contribution: PluginComposerPillContribution): PluginButtonRegistration;
@@ -20,7 +21,7 @@ export interface PillAgent {
 }
 
 export interface PromptPills {
-  setPrompts(prompts: readonly QuickPrompt[]): void;
+  setSettings(settings: QuickPromptsSettings): void;
   /** Replaces the agent list with a full snapshot. */
   setAgents(agents: readonly PillAgent[]): void;
   upsertAgent(agent: PillAgent): void;
@@ -28,9 +29,16 @@ export interface PromptPills {
   removeAll(): void;
 }
 
+/** A pill an agent should show; `content` changes whenever its button does. */
+interface PillSpec {
+  id: string;
+  content: string;
+  button(agentId: string): PluginButton;
+}
+
 interface Pill {
   id: string;
-  prompt: QuickPrompt | null;
+  content: string;
   registration: PluginButtonRegistration;
 }
 
@@ -39,40 +47,73 @@ interface AgentPills {
   pills: Pill[];
 }
 
-function pillId(prompt: QuickPrompt | null): string {
-  return prompt ? `prompt-${prompt.id}` : ADD_PILL_ID;
-}
-
 /**
- * Keeps one composer pill per saved prompt on every agent, or a single "Add quick prompt" pill
- * when none are saved. Pills whose order is unchanged update in place; a reorder, addition, or
- * removal re-registers that agent's pills, because registration order is display order.
+ * Keeps one composer pill per saved prompt on every agent, a single "Prompts" pill whose menu
+ * lists them, or a single "Add quick prompt" pill when none are saved. Pills whose order is
+ * unchanged update in place; a reorder, addition, removal, or display switch re-registers that
+ * agent's pills, because registration order is display order.
  *
  * A factory rather than a class: plugin client bundles reach Hermes (iOS, Android) without Metro's
  * transforms, and Hermes rejects class syntax (getpaseo/paseo#5783).
  */
 export function createPromptPills(host: PromptPillHost): PromptPills {
   /** Null until the first read, so agents do not flash the "Add quick prompt" pill. */
-  let prompts: readonly QuickPrompt[] | null = null;
+  let specs: readonly PillSpec[] | null = null;
   /** Agents that get pills, by id, with their workspace. */
   const targets = new Map<string, string>();
   const registered = new Map<string, AgentPills>();
 
-  const button = (agentId: string, prompt: QuickPrompt | null): PluginButton =>
-    prompt
-      ? {
-          title: `Send quick prompt: ${prompt.label}`,
-          icon: "Zap",
-          label: prompt.label,
-          // Paseo marks the pill busy until the send settles and shows a failure in a toast.
-          behavior: { kind: "action", onPress: () => host.send(agentId, prompt.text) },
-        }
-      : {
-          title: "Add a quick prompt in settings",
-          icon: "Plus",
-          label: "Add quick prompt",
-          behavior: { kind: "action", onPress: () => host.openSettings() },
-        };
+  const addSpec: PillSpec = {
+    id: ADD_PILL_ID,
+    content: "",
+    button: () => ({
+      title: "Add a quick prompt in settings",
+      icon: "Plus",
+      label: "Add quick prompt",
+      behavior: { kind: "action", onPress: () => host.openSettings() },
+    }),
+  };
+
+  const promptSpec = (prompt: QuickPrompt): PillSpec => ({
+    id: `prompt-${prompt.id}`,
+    content: JSON.stringify([prompt.label, prompt.text]),
+    button: (agentId) => ({
+      title: `Send quick prompt: ${prompt.label}`,
+      icon: "Zap",
+      label: prompt.label,
+      // Paseo marks the pill busy until the send settles and shows a failure in a toast.
+      behavior: { kind: "action", onPress: () => host.send(agentId, prompt.text) },
+    }),
+  });
+
+  const menuSpec = (prompts: readonly QuickPrompt[]): PillSpec => ({
+    id: MENU_PILL_ID,
+    content: JSON.stringify(prompts),
+    button: (agentId) => ({
+      title: "Send a quick prompt",
+      icon: "Zap",
+      label: "Prompts",
+      behavior: {
+        kind: "menu",
+        items: [
+          ...prompts.map((prompt) => ({
+            kind: "item" as const,
+            id: `prompt-${prompt.id}`,
+            title: prompt.label,
+            behavior: { kind: "action" as const, onPress: () => host.send(agentId, prompt.text) },
+          })),
+          { kind: "separator", id: "manage-divider" },
+          {
+            kind: "item",
+            id: "manage",
+            title: "Manage prompts",
+            icon: "Settings",
+            behavior: { kind: "action", onPress: () => host.openSettings() },
+          },
+        ],
+      },
+    }),
+  });
 
   const clear = (agentId: string): void => {
     for (const pill of registered.get(agentId)?.pills ?? []) pill.registration.remove();
@@ -80,29 +121,29 @@ export function createPromptPills(host: PromptPillHost): PromptPills {
   };
 
   const sync = (agentId: string, workspaceId: string): void => {
-    if (prompts === null) return;
-    const next: Array<QuickPrompt | null> = prompts.length > 0 ? [...prompts] : [null];
+    if (specs === null) return;
+    const next = specs;
     const current = registered.get(agentId);
     const sameOrder =
       current?.workspaceId === workspaceId &&
       current.pills.length === next.length &&
-      current.pills.every((pill, index) => pill.id === pillId(next[index] ?? null));
+      current.pills.every((pill, index) => pill.id === next[index]?.id);
     if (current && sameOrder) {
       current.pills.forEach((pill, index) => {
-        const prompt = next[index] ?? null;
-        if (pill.prompt?.label === prompt?.label && pill.prompt?.text === prompt?.text) return;
-        pill.prompt = prompt;
-        pill.registration.update(button(agentId, prompt));
+        const spec = next[index];
+        if (!spec || pill.content === spec.content) return;
+        pill.content = spec.content;
+        // The full button, so a menu gets its complete new behavior.
+        pill.registration.update(spec.button(agentId));
       });
       return;
     }
     clear(agentId);
     registered.set(agentId, {
       workspaceId,
-      pills: next.map((prompt) => {
-        const id = pillId(prompt);
-        const registration = host.addComposerPill({ id, workspaceId, agentId, button: button(agentId, prompt) });
-        return { id, prompt, registration };
+      pills: next.map(({ id, content, button }) => {
+        const registration = host.addComposerPill({ id, workspaceId, agentId, button: button(agentId) });
+        return { id, content, registration };
       }),
     });
   };
@@ -119,8 +160,9 @@ export function createPromptPills(host: PromptPillHost): PromptPills {
   };
 
   return {
-    setPrompts(next) {
-      prompts = next;
+    setSettings({ prompts, display }) {
+      if (prompts.length === 0) specs = [addSpec];
+      else specs = display === "menu" ? [menuSpec(prompts)] : prompts.map(promptSpec);
       for (const [agentId, workspaceId] of targets) sync(agentId, workspaceId);
     },
     setAgents(list) {

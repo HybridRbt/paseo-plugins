@@ -24,6 +24,10 @@ export const QuickPromptSchema = z.object({
 
 export type QuickPrompt = z.output<typeof QuickPromptSchema>;
 
+/** How prompts appear above the composer: one pill each, or one pill that opens a menu. */
+export const PROMPT_DISPLAYS = ["pills", "menu"] as const;
+export type PromptDisplay = (typeof PROMPT_DISPLAYS)[number];
+
 export const quickPromptsSettings = defineSettings({
   id: "prompts",
   scope: "host",
@@ -34,15 +38,19 @@ export const quickPromptsSettings = defineSettings({
       .max(MAX_PROMPTS, `Save at most ${MAX_PROMPTS} quick prompts`)
       .refine((prompts) => new Set(prompts.map(({ id }) => id)).size === prompts.length, "Quick prompt ids must be unique")
       .default([]),
+    // Documents saved before this field existed keep separate pills.
+    display: z.enum(PROMPT_DISPLAYS).default("pills"),
   }),
 });
 
 export type QuickPromptsSettings = z.output<typeof quickPromptsSettings.schema>;
 
-/** The saved prompts from a settings read; stored data that fails validation counts as none. */
-export function promptsFromSettings(result: { status: "ready"; values: unknown } | { status: "invalid" }): QuickPrompt[] {
-  if (result.status !== "ready") return [];
-  return quickPromptsSettings.schema.safeParse(result.values).data?.prompts ?? [];
+/** The saved settings from a settings read; stored data that fails validation counts as the defaults. */
+export function settingsFromRead(
+  result: { status: "ready"; values: unknown } | { status: "invalid" },
+): QuickPromptsSettings {
+  const parsed = result.status === "ready" ? quickPromptsSettings.schema.safeParse(result.values).data : undefined;
+  return parsed ?? quickPromptsSettings.schema.parse({});
 }
 
 export function newPromptId(): string {
