@@ -38,8 +38,9 @@ export const quickPromptsSettings = defineSettings({
       .max(MAX_PROMPTS, `Save at most ${MAX_PROMPTS} quick prompts`)
       .refine((prompts) => new Set(prompts.map(({ id }) => id)).size === prompts.length, "Quick prompt ids must be unique")
       .default([]),
-    // Documents saved before this field existed keep separate pills.
-    display: z.enum(PROMPT_DISPLAYS).default("pills"),
+    // Documents saved before this field existed, or with a display this version does not know,
+    // keep separate pills and their prompts.
+    display: z.enum(PROMPT_DISPLAYS).catch("pills"),
   }),
 });
 

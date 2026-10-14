@@ -27,13 +27,16 @@ describe("quickPromptsSettings", () => {
     expect(parse(many).success).toBe(false);
   });
 
-  it("keeps separate pills for documents saved before the display setting, and rejects unknown displays", () => {
+  it("keeps separate pills and the prompts when the display setting is missing or unknown", () => {
     expect(settingsFromRead({ status: "ready", values: { prompts: [prompt("a1")] } })).toEqual({
       prompts: [prompt("a1")],
       display: "pills",
     });
     expect(quickPromptsSettings.schema.safeParse({ display: "menu" }).data?.display).toBe("menu");
-    expect(quickPromptsSettings.schema.safeParse({ display: "grid" }).success).toBe(false);
+    expect(settingsFromRead({ status: "ready", values: { prompts: [prompt("a1")], display: "grid" } })).toEqual({
+      prompts: [prompt("a1")],
+      display: "pills",
+    });
   });
 
   it("treats invalid stored data as the defaults", () => {

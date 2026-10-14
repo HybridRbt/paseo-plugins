@@ -167,6 +167,23 @@ describe("createPromptPills", () => {
     expect(settingsOpened()).toBe(1);
   });
 
+  it("sends a menu item's prompt to that pill's agent and opens settings from Manage prompts", async () => {
+    const { controller, choose, sent, settingsOpened } = setup();
+    controller.setSettings(library([review, tests], "menu"));
+    controller.setAgents([agent("a"), agent("b")]);
+
+    await choose("b", "Review");
+    await choose("a", "Tests");
+    expect(sent).toEqual([
+      ["b", "Review the changes."],
+      ["a", "Run the tests."],
+    ]);
+    expect(settingsOpened()).toBe(0);
+    await choose("b", "Manage prompts");
+    expect(settingsOpened()).toBe(1);
+    expect(sent).toHaveLength(2);
+  });
+
   it("updates the menu in place as prompts change", async () => {
     const { controller, pills, shown, menu, choose, sent } = setup();
     controller.setSettings(library([review, tests], "menu"));

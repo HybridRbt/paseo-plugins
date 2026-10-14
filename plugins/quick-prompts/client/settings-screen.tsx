@@ -282,16 +282,6 @@ function PromptLibrary({ settings, theme, layout }: { settings: ReadySettings } 
         Quick prompts appear above every agent's composer, as separate pills or in one Prompts menu. Choosing one
         sends the prompt to that agent as your message.
       </Text>
-      <SettingsCard>
-        <SettingsSelect
-          label="Show prompts as"
-          hint="Separate pills show one pill per prompt; one menu pill keeps them in a single menu."
-          value={values.display}
-          options={DISPLAY_OPTIONS}
-          disabled={disabled}
-          onValueChange={(display) => editValues((current) => ({ ...current, display }))}
-        />
-      </SettingsCard>
       {prompts.map((prompt, index) => (
         <PromptEditor
           key={prompt.id}
@@ -326,7 +316,16 @@ function PromptLibrary({ settings, theme, layout }: { settings: ReadySettings } 
           onPress={() => edit((current) => [...current, { id: newPromptId(), label: "", text: "" }])}
         />
       </SettingsCard>
-      <FindPromptsTip styles={styles} />
+      <SettingsCard>
+        <SettingsSelect
+          label="Show prompts as"
+          hint="Separate pills show one pill per prompt; one menu pill keeps them in a single menu."
+          value={values.display}
+          options={DISPLAY_OPTIONS}
+          disabled={disabled}
+          onValueChange={(display) => editValues((current) => ({ ...current, display }))}
+        />
+      </SettingsCard>
       {editing ? (
         <SettingsCard>
           <SettingsAction
@@ -339,6 +338,7 @@ function PromptLibrary({ settings, theme, layout }: { settings: ReadySettings } 
           <SettingsAction label="Discard changes" actionLabel="Discard" disabled={disabled} onPress={discard} />
         </SettingsCard>
       ) : null}
+      <FindPromptsTip styles={styles} />
     </SettingsSection>
   );
 }
