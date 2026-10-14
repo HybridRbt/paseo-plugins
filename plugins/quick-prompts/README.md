@@ -89,7 +89,7 @@ paseo plugin logs paseo-quick-prompts
 | `client/pills.ts` | Keeps each agent's pills in sync with the saved prompts |
 | `client/follow.ts` | Follows the agent directory and settings changes |
 | `client/settings-screen.tsx` | Autosaving editor for the prompts and display option, and the prompt-ideas tip |
-| `client/autosave.ts` | Save queue for the settings screen: latest values, typed drafts, conflict retry |
+| `client/autosave.ts` | Save queue for the settings screen: latest values, typed drafts, the new-prompt form, conflict retry |
 | `client/edits.ts` | Prompt edits applied to the latest values |
 | `shared/prompts.ts` | Settings schema and limits |
 

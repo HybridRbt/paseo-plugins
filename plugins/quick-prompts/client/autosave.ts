@@ -1,6 +1,6 @@
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
-import { QuickPromptSchema, quickPromptsSettings } from "../shared/prompts";
-import { applyEdit, deletePrompt, settingsContract, updatePrompt, type Edit, type SettingsDoc } from "./edits";
+import { newPromptId, QuickPromptSchema, quickPromptsSettings } from "../shared/prompts";
+import { addPrompt, applyEdit, deletePrompt, settingsContract, updatePrompt, type Edit, type SettingsDoc } from "./edits";
 
 export type Field = "label" | "text";
 
@@ -9,8 +9,11 @@ export interface Draft {
   promptId: string;
   field: Field;
   text: string;
-  /** The text whose save is queued or in flight, so the same text is not sent twice. */
-  submitted: string | null;
+  /**
+   * The latest save of this field that is queued or in flight. Its token tells its response apart
+   * from earlier saves of the same text; its text keeps the same text from being sent twice.
+   */
+  pending: { token: number; text: string } | null;
   /** Set when the field loses focus with text that cannot be saved. */
   showError: boolean;
 }
@@ -21,6 +24,9 @@ export interface AutosaveState {
   drafts: ReadonlyMap<string, Draft>;
   /** Prompts with a delete queued or in flight. */
   deleting: ReadonlySet<string>;
+  /** The form for a new prompt; `showErrors` is set by an Add with text that cannot be saved. */
+  newPrompt: { label: string; text: string; showErrors: boolean };
+  adding: boolean;
   saving: boolean;
   /** How the latest save that reached the host ended. */
   last: "saved" | "failed" | null;
@@ -45,6 +51,9 @@ export interface Autosave {
   /** The field lost focus: save its text if it is valid and not already on its way. */
   submit(promptId: string, field: Field): void;
   remove(promptId: string): Promise<SaveResult>;
+  setNewPrompt(field: Field, text: string): void;
+  /** Adds the new prompt form's prompt; resolves `unchanged` when it cannot be saved or is already adding. */
+  add(): Promise<SaveResult>;
   /** Forgets drafts whose prompt no longer exists. */
   dismissOrphans(): void;
   /** Submits every draft that can save; returns how many drafts cannot. */
@@ -78,12 +87,21 @@ const parseField = (field: Field, text: string) => QuickPromptSchema.shape[field
  * A factory rather than a class: Hermes rejects class syntax in plugin client bundles.
  */
 export function createAutosave(initial: SettingsDoc, { io, onProblem }: AutosaveOptions): Autosave {
-  let state: AutosaveState = { doc: initial, drafts: new Map(), deleting: new Set(), saving: false, last: null };
+  let state: AutosaveState = {
+    doc: initial,
+    drafts: new Map(),
+    deleting: new Set(),
+    newPrompt: { label: "", text: "", showErrors: false },
+    adding: false,
+    saving: false,
+    last: null,
+  };
   const listeners = new Set<() => void>();
   let queue: Promise<unknown> = Promise.resolve();
   /** Counts change notifications; `readAt` is the count when the latest successful read started. */
   let notified = 0;
   let readAt = 0;
+  let submissions = 0;
 
   const set = (patch: Partial<AutosaveState>): void => {
     state = { ...state, ...patch };
@@ -153,22 +171,24 @@ export function createAutosave(initial: SettingsDoc, { io, onProblem }: Autosave
   const submit = (promptId: string, field: Field): void => {
     const key = draftKey(promptId, field);
     const draft = state.drafts.get(key);
-    if (!draft || draft.submitted === draft.text) return;
+    if (!draft || draft.pending?.text === draft.text) return;
     const parsed = parseField(field, draft.text);
     if (!parsed.success) {
       setDraftEntry(key, { ...draft, showError: true });
       return;
     }
     const text = draft.text;
-    setDraftEntry(key, { ...draft, submitted: text, showError: false });
+    const token = ++submissions;
+    setDraftEntry(key, { ...draft, pending: { token, text }, showError: false });
     void save(updatePrompt(promptId, field, parsed.data)).then((result) => {
       const current = state.drafts.get(key);
-      if (current?.submitted !== text) return undefined;
+      // A later save of this field decides what happens to the draft.
+      if (current?.pending?.token !== token) return undefined;
       const next = new Map(state.drafts);
       const stored = result === "saved" || (result === "unchanged" && hasPrompt(state.doc, promptId));
       // Saved as typed: a later change from another client wins. Otherwise a later blur may send it again.
       if (stored && current.text === text) next.delete(key);
-      else next.set(key, { ...current, submitted: null });
+      else next.set(key, { ...current, pending: null });
       set({ drafts: next });
       return undefined;
     });
@@ -192,7 +212,7 @@ export function createAutosave(initial: SettingsDoc, { io, onProblem }: Autosave
     setDraft(promptId, field, text) {
       const key = draftKey(promptId, field);
       const draft = state.drafts.get(key);
-      setDraftEntry(key, { promptId, field, text, submitted: draft?.submitted ?? null, showError: draft?.showError ?? false });
+      setDraftEntry(key, { promptId, field, text, pending: draft?.pending ?? null, showError: draft?.showError ?? false });
     },
     submit,
     async remove(promptId) {
@@ -206,6 +226,28 @@ export function createAutosave(initial: SettingsDoc, { io, onProblem }: Autosave
         ? state.drafts
         : new Map([...state.drafts].filter(([, draft]) => draft.promptId !== promptId));
       set({ deleting, drafts });
+      return result;
+    },
+    setNewPrompt(field, text) {
+      set({ newPrompt: { ...state.newPrompt, [field]: text } });
+    },
+    async add() {
+      if (state.adding) return "unchanged";
+      const { label, text } = state.newPrompt;
+      const parsed = QuickPromptSchema.safeParse({ id: newPromptId(), label, text });
+      if (!parsed.success) {
+        set({ newPrompt: { ...state.newPrompt, showErrors: true } });
+        return "unchanged";
+      }
+      set({ adding: true });
+      const result = await save(addPrompt(parsed.data));
+      const current = state.newPrompt;
+      // Keep anything typed while the prompt was being added.
+      const newPrompt =
+        result === "saved"
+          ? { label: current.label === label ? "" : current.label, text: current.text === text ? "" : current.text, showErrors: false }
+          : current;
+      set({ adding: false, newPrompt });
       return result;
     },
     dismissOrphans() {

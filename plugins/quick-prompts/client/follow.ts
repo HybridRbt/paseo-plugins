@@ -14,8 +14,8 @@ const RETRY_DELAYS_MS = [1_000, 5_000, 15_000, 60_000];
 interface Attempt {
   /** Aborted when this attempt fails or the lifetime ends; releases its subscription. */
   signal: AbortSignal;
-  /** The observation delivered a snapshot; later failures start the delays from the beginning. */
-  snapshot(): void;
+  /** The observation is fully up to date; later failures start the delays from the beginning. */
+  ready(): void;
   failed(error: unknown): void;
 }
 
@@ -31,7 +31,7 @@ function observeWithRetry(name: string, lifetime: AbortSignal, start: (attempt: 
     lifetime.addEventListener("abort", stop, { once: true });
     start({
       signal: controller.signal,
-      snapshot: () => {
+      ready: () => {
         failures = 0;
       },
       failed: (error) => {
@@ -52,12 +52,45 @@ function observeWithRetry(name: string, lifetime: AbortSignal, start: (attempt: 
   run();
 }
 
-/**
- * Follows the agent directory: every page of existing agents first, then updates, and a fresh
- * snapshot after a reconnect.
- */
+type AgentListResult = Awaited<ReturnType<Paseo["agents"]["list"]>>;
+type AgentSubscription = NonNullable<AgentListResult["subscription"]>;
+type AgentMessage = Parameters<Parameters<AgentSubscription["subscribe"]>[0]["update"]>[0];
+
+/** One page of the agent directory, with only what the pills read. */
+export interface AgentPage {
+  entries: ReadonlyArray<{ agent: PillAgent }>;
+  pageInfo: { hasMore: boolean; nextCursor: string | null };
+}
+
+/** The part of `paseo.agents` that following the directory uses. */
+export interface AgentDirectory {
+  /** A subscription that delivers the first page, then updates, and a fresh first page after a reconnect. */
+  subscribe(signal: AbortSignal): Promise<{
+    subscription: {
+      subscribe(observer: {
+        snapshot(page: AgentPage): void;
+        update(message: AgentMessage): void;
+        error(error: unknown): void;
+      }): () => void;
+    };
+  }>;
+  page(cursor: string): Promise<AgentPage>;
+}
+
+/** Follows every agent: all pages of existing agents first, then updates. */
 export function followAgents(client: Client, pills: PromptPills, lifetime: AbortSignal): void {
-  observeWithRetry("agent observation", lifetime, ({ signal, snapshot, failed }) => {
+  followAgentDirectory(
+    {
+      subscribe: (signal) => client.paseo.agents.list({ subscribe: {}, signal }),
+      page: (cursor) => client.paseo.agents.list({ page: { limit: PAGE_LIMIT, cursor } }),
+    },
+    pills,
+    lifetime,
+  );
+}
+
+export function followAgentDirectory(directory: AgentDirectory, pills: PromptPills, lifetime: AbortSignal): void {
+  observeWithRetry("agent observation", lifetime, ({ signal, ready, failed }) => {
     let bootstrap = 0;
     /** Agents updated or removed (null) while later pages load; they are newer than those pages. */
     let changed: Map<string, PillAgent | null> | null = null;
@@ -66,7 +99,7 @@ export function followAgents(client: Client, pills: PromptPills, lifetime: Abort
       const updates = new Map<string, PillAgent | null>();
       changed = updates;
       while (cursor) {
-        const page = await client.paseo.agents.list({ page: { limit: PAGE_LIMIT, cursor } });
+        const page = await directory.page(cursor);
         if (signal.aborted || generation !== bootstrap) return;
         agents.push(...page.entries.map(({ agent }) => agent));
         cursor = page.pageInfo.hasMore ? page.pageInfo.nextCursor : null;
@@ -78,19 +111,20 @@ export function followAgents(client: Client, pills: PromptPills, lifetime: Abort
         else byId.delete(agentId);
       }
       pills.setAgents([...byId.values()]);
+      ready();
     };
 
-    client.paseo.agents
-      .list({ subscribe: {}, signal })
+    directory
+      .subscribe(signal)
       .then(({ subscription }) => {
         subscription.subscribe({
           snapshot: ({ entries, pageInfo }) => {
-            snapshot();
             const generation = ++bootstrap;
-            const agents = entries.map(({ agent }): PillAgent => agent);
+            const agents = entries.map(({ agent }) => agent);
             if (!pageInfo.hasMore) {
               changed = null;
               pills.setAgents(agents);
+              ready();
               return;
             }
             loadAll(generation, agents, pageInfo.nextCursor).catch(failed);
@@ -116,10 +150,10 @@ export function followAgents(client: Client, pills: PromptPills, lifetime: Abort
 
 /** Calls `onChange` now, after a reconnect, and whenever any client saves the quick prompts. */
 export function followPromptChanges(paseo: Paseo, lifetime: AbortSignal, onChange: () => void): void {
-  observeWithRetry("settings observation", lifetime, ({ signal, snapshot, failed }) => {
+  observeWithRetry("settings observation", lifetime, ({ signal, ready, failed }) => {
     paseo.observeEvents(["status.plugin_settings_changed"], { signal }).subscribe({
       snapshot: () => {
-        snapshot();
+        ready();
         onChange();
       },
       update: (message) => {

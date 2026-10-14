@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createAutosave, orphanedDrafts, type SettingsIo } from "../client/autosave";
 import { movePrompt, setDisplay, updatePrompt, type SettingsDoc } from "../client/edits";
 import { quickPromptsSettings, type QuickPromptsSettings } from "../shared/prompts";
@@ -19,6 +19,7 @@ function setup(initial: QuickPromptsSettings) {
     stored: doc(initial),
     writes: 0,
     failWrites: new Set<number>(),
+    failReads: false,
     hold: false,
     held: [] as Array<() => void>,
     problems: [] as string[],
@@ -41,7 +42,10 @@ function setup(initial: QuickPromptsSettings) {
       host.stored = doc(quickPromptsSettings.schema.parse(written));
       return respond({ status: "saved", ...host.stored });
     },
-    read: () => respond({ status: "ready", ...host.stored }),
+    read: async () => {
+      if (host.failReads) throw new Error("offline");
+      return respond({ status: "ready", ...host.stored });
+    },
   };
   const store = createAutosave(doc(initial), { io, onProblem: (problem) => host.problems.push(problem) });
   return { host, store, state: () => store.getState() };
@@ -124,6 +128,36 @@ describe("drafts", () => {
     expect(state().drafts.size).toBe(0);
   });
 
+  it("are cleared only by the response to their latest save, not an earlier save of the same text", async () => {
+    const { host, store, state } = setup(values("a"));
+    host.hold = true;
+    store.setDraft("a", "label", "X");
+    store.submit("a", "label");
+    await idle();
+    store.setDraft("a", "label", "Y");
+    store.submit("a", "label");
+    store.setDraft("a", "label", "X");
+    store.submit("a", "label");
+    host.failWrites.add(3);
+    host.release();
+    await idle();
+    expect(host.stored.values.prompts[0]?.label).toBe("Y");
+    expect(state().drafts.get("a:label")).toEqual({ promptId: "a", field: "label", text: "X", pending: null, showError: false });
+  });
+
+  it("stay through a failed read", async () => {
+    const { host, store, state } = setup(values("a"));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    store.setDraft("a", "text", "Typing");
+    host.failReads = true;
+    store.refresh();
+    await idle();
+    expect(state().drafts.get("a:text")?.text).toBe("Typing");
+    expect(state().doc).toEqual(doc(values("a")));
+    expect(logged).toHaveBeenCalled();
+    logged.mockRestore();
+  });
+
   it("send a field once when it loses focus and the screen then closes", async () => {
     const { host, store, state } = setup(values("a"));
     host.hold = true;
@@ -186,6 +220,36 @@ describe("drafts", () => {
     await idle();
     expect(state().doc.values.display).toBe("menu");
     expect(state().drafts.get("a:text")?.text).toBe("Typing");
+    expect(host.writes).toBe(0);
+  });
+});
+
+describe("new prompt form", () => {
+  it("adds once and keeps text typed while the add is in flight", async () => {
+    const { host, store, state } = setup(values("a"));
+    store.setNewPrompt("label", "Docs");
+    store.setNewPrompt("text", "Update the docs.");
+    host.hold = true;
+    const added = store.add();
+    expect(await store.add()).toBe("unchanged");
+    await idle();
+    store.setNewPrompt("text", "Update the docs and the README.");
+    host.release();
+
+    expect(await added).toBe("saved");
+    expect(host.writes).toBe(1);
+    expect(host.stored.values.prompts.map(({ label, text }) => [label, text])).toEqual([
+      ["Label a", "Text a"],
+      ["Docs", "Update the docs."],
+    ]);
+    expect(state().newPrompt).toEqual({ label: "", text: "Update the docs and the README.", showErrors: false });
+  });
+
+  it("shows errors and sends nothing when the prompt cannot be saved", async () => {
+    const { host, store, state } = setup(values("a"));
+    store.setNewPrompt("label", "Docs");
+    expect(await store.add()).toBe("unchanged");
+    expect(state().newPrompt).toEqual({ label: "Docs", text: "", showErrors: true });
     expect(host.writes).toBe(0);
   });
 });

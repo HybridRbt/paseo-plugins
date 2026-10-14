@@ -6,14 +6,13 @@ import { Pressable, Text, TextInput, View } from "react-native";
 import {
   LABEL_MAX_LENGTH,
   MAX_PROMPTS,
-  newPromptId,
   QuickPromptSchema,
   quickPromptsSettings,
   type PromptDisplay,
   type QuickPrompt,
 } from "../shared/prompts";
 import { createAutosave, draftKey, orphanedDrafts, type Autosave, type AutosaveState, type Field } from "./autosave";
-import { addPrompt, movePrompt, setDisplay, settingsContract, type SettingsDoc } from "./edits";
+import { movePrompt, setDisplay, settingsContract, type SettingsDoc } from "./edits";
 import { followPromptChanges } from "./follow";
 
 type Settings = SettingsState<typeof quickPromptsSettings.schema>;
@@ -203,34 +202,20 @@ function PromptEditor({
   );
 }
 
-function NewPromptCard({ count, store, theme, styles }: { count: number; store: Autosave; theme: Theme; styles: Styles }) {
-  const [label, setLabel] = useState("");
-  const [text, setText] = useState("");
-  const [showErrors, setShowErrors] = useState(false);
-  const [adding, setAdding] = useState(false);
-  // State updates are async, so a fast double tap would otherwise add the prompt twice.
-  const addingRef = useRef(false);
-
-  const add = async (): Promise<void> => {
-    if (addingRef.current) return;
-    const parsed = QuickPromptSchema.safeParse({ id: newPromptId(), label, text });
-    if (!parsed.success) {
-      setShowErrors(true);
-      return;
-    }
-    addingRef.current = true;
-    setAdding(true);
-    const result = await store.save(addPrompt(parsed.data));
-    addingRef.current = false;
-    setAdding(false);
-    if (result === "saved") {
-      // Keep anything typed while the prompt was being added.
-      setLabel((current) => (current === label ? "" : current));
-      setText((current) => (current === text ? "" : current));
-      setShowErrors(false);
-    }
-  };
-
+function NewPromptCard({
+  count,
+  state,
+  store,
+  theme,
+  styles,
+}: {
+  count: number;
+  state: AutosaveState;
+  store: Autosave;
+  theme: Theme;
+  styles: Styles;
+}) {
+  const { label, text, showErrors } = state.newPrompt;
   return (
     <SettingsCard>
       <FieldInput
@@ -240,7 +225,7 @@ function NewPromptCard({ count, store, theme, styles }: { count: number; store: 
         accessibilityLabel="Label for the new quick prompt"
         theme={theme}
         styles={styles}
-        onChangeText={setLabel}
+        onChangeText={(value) => store.setNewPrompt("label", value)}
       />
       <FieldInput
         field="text"
@@ -249,14 +234,14 @@ function NewPromptCard({ count, store, theme, styles }: { count: number; store: 
         accessibilityLabel="Prompt for the new quick prompt"
         theme={theme}
         styles={styles}
-        onChangeText={setText}
+        onChangeText={(value) => store.setNewPrompt("text", value)}
       />
       <SettingsAction
         label={count === 0 ? "No quick prompts yet" : `${count} of ${MAX_PROMPTS} quick prompts`}
         hint={`Labels can be up to ${LABEL_MAX_LENGTH} characters.`}
-        actionLabel={adding ? "Adding…" : "Add quick prompt"}
-        disabled={adding || count >= MAX_PROMPTS}
-        onPress={() => void add()}
+        actionLabel={state.adding ? "Adding…" : "Add quick prompt"}
+        disabled={state.adding || count >= MAX_PROMPTS}
+        onPress={() => void store.add()}
       />
     </SettingsCard>
   );
@@ -434,7 +419,7 @@ function PromptLibrary({
           styles={styles}
         />
       ))}
-      <NewPromptCard count={prompts.length} store={store} theme={theme} styles={styles} />
+      <NewPromptCard count={prompts.length} state={state} store={store} theme={theme} styles={styles} />
       <SettingsCard>
         <SettingsSelect
           label="Show prompts as"
