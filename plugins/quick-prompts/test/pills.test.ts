@@ -10,7 +10,7 @@ interface FakePill {
   removed: boolean;
 }
 
-function setup() {
+function setup(settle: () => Promise<void> = async () => {}) {
   const pills: FakePill[] = [];
   const sent: Array<[string, string]> = [];
   let settingsOpened = 0;
@@ -30,8 +30,9 @@ function setup() {
         },
       };
     },
-    send: async (agentId, text) => {
+    send: (agentId, text) => {
       sent.push([agentId, text]);
+      return settle();
     },
     openSettings: () => {
       settingsOpened += 1;
@@ -199,6 +200,26 @@ describe("createPromptPills", () => {
 
     controller.setSettings(library([], "menu"));
     expect(shown()).toEqual({ a: ["Add quick prompt"] });
+  });
+
+  it("does not send a prompt again while its first send is pending, even after re-registering", async () => {
+    let finish = () => {};
+    const { controller, sent, press, choose } = setup(() => new Promise<void>((resolve) => (finish = resolve)));
+    controller.setSettings(library([review, tests]));
+    controller.setAgents([agent("a")]);
+
+    const first = press("a", "Review");
+    controller.setSettings(library([tests, review]));
+    const again = press("a", "Review");
+    controller.setSettings(library([review, tests], "menu"));
+    const fromMenu = choose("a", "Review");
+    expect(sent).toEqual([["a", "Review the changes."]]);
+
+    finish();
+    await Promise.all([first, again, fromMenu]);
+    void choose("a", "Review");
+    expect(sent).toHaveLength(2);
+    finish();
   });
 
   it("switches between separate pills and the menu without duplicates", () => {
