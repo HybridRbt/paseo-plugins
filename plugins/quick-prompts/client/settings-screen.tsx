@@ -22,6 +22,7 @@ import {
   settingsContract,
   updatePrompt,
   type Edit,
+  type SaveOutcome,
   type SettingsDoc,
 } from "./edits";
 
@@ -33,6 +34,8 @@ const DISPLAY_OPTIONS: ReadonlyArray<{ label: string; value: PromptDisplay }> = 
   { label: "Separate pills", value: "pills" },
   { label: "One menu pill", value: "menu" },
 ];
+
+const STALE_MESSAGE = "Quick prompts changed elsewhere, so this change was not saved.";
 
 const FIND_PROMPTS_PROMPT =
   "Look through my past Paseo agent sessions using the Paseo tools (list my agents and read their " +
@@ -196,6 +199,8 @@ function PromptEditor({
   theme,
   styles,
   commit,
+  commitText,
+  remove,
 }: {
   prompt: QuickPrompt;
   index: number;
@@ -203,6 +208,8 @@ function PromptEditor({
   theme: Theme;
   styles: Styles;
   commit(edit: Edit): Promise<boolean>;
+  commitText(id: string, field: Field, value: string): Promise<boolean>;
+  remove(id: string): void;
 }) {
   const name = prompt.label || `quick prompt ${index + 1}`;
   return (
@@ -213,7 +220,7 @@ function PromptEditor({
         accessibilityLabel={`Label for ${name}`}
         theme={theme}
         styles={styles}
-        onCommit={(value) => commit(updatePrompt(prompt.id, "label", value))}
+        onCommit={(value) => commitText(prompt.id, "label", value)}
       />
       <SavedField
         field="text"
@@ -221,7 +228,7 @@ function PromptEditor({
         accessibilityLabel={`Prompt for ${name}`}
         theme={theme}
         styles={styles}
-        onCommit={(value) => commit(updatePrompt(prompt.id, "text", value))}
+        onCommit={(value) => commitText(prompt.id, "text", value)}
       />
       <View style={[styles.editor, styles.buttons]}>
         <SmallButton
@@ -243,7 +250,7 @@ function PromptEditor({
           accessibilityLabel={`Delete ${name}`}
           danger
           styles={styles}
-          onPress={() => void commit(deletePrompt(prompt.id))}
+          onPress={() => remove(prompt.id)}
         />
       </View>
     </SettingsCard>
@@ -265,15 +272,20 @@ function NewPromptCard({
   const [text, setText] = useState("");
   const [showErrors, setShowErrors] = useState(false);
   const [adding, setAdding] = useState(false);
+  // State updates are async, so a fast double tap would otherwise add the prompt twice.
+  const addingRef = useRef(false);
 
   const add = async (): Promise<void> => {
+    if (addingRef.current) return;
     const parsed = QuickPromptSchema.safeParse({ id: newPromptId(), label, text });
     if (!parsed.success) {
       setShowErrors(true);
       return;
     }
+    addingRef.current = true;
     setAdding(true);
     const added = await commit(addPrompt(parsed.data));
+    addingRef.current = false;
     setAdding(false);
     if (added) {
       setLabel("");
@@ -348,47 +360,76 @@ function PromptLibrary({ settings, theme, layout }: { settings: ReadySettings } 
   const [doc, setDocState] = useState<SettingsDoc>({ values: settings.values, revision: settings.revision });
   // The latest known values and revision, which each queued save starts from.
   const latest = useRef(doc);
+  // Revisions this screen has moved past, so a late read of one cannot bring its values back.
+  const superseded = useRef(new Set<string>());
+  // Prompts deleted here, whose unsaved field text is meant to go with them.
+  const deletedHere = useRef(new Set<string>());
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const [pending, setPending] = useState(0);
   const [saved, setSaved] = useState(false);
 
   const setDoc = (next: SettingsDoc): void => {
+    if (next.revision !== latest.current.revision) superseded.current.add(latest.current.revision);
     latest.current = next;
     setDocState(next);
   };
 
   // Another client's save or a reload. Fields being typed in keep their text.
   useEffect(() => {
-    if (settings.revision !== latest.current.revision) {
+    if (settings.revision !== latest.current.revision && !superseded.current.has(settings.revision)) {
       setDoc({ values: settings.values, revision: settings.revision });
     }
   }, [settings.revision]);
 
-  /** Saves one change after any earlier ones; resolves whether it was saved. */
-  const commit = (edit: Edit): Promise<boolean> => {
+  /** Saves one change after any earlier ones; resolves how it went. */
+  const enqueue = (edit: Edit): Promise<SaveOutcome["status"]> => {
     setPending((count) => count + 1);
     const run = queue.current.then(async () => {
       const outcome = await saveEdit(edit, latest.current, { write, read: () => read({}) });
       setPending((count) => count - 1);
-      switch (outcome.status) {
-        case "saved":
-          setDoc(outcome.doc);
-          setSaved(true);
-          return true;
-        case "unchanged":
-          return false;
-        case "stale":
-          setDoc(outcome.doc);
-          toast.error("Quick prompts changed elsewhere, so this change was not saved.");
-          return false;
-        case "failed":
-          console.error("[paseo-quick-prompts] failed to save quick prompts", outcome.error);
-          toast.error("Could not save quick prompts. Try again.");
-          return false;
+      if (outcome.status === "saved") setSaved(true);
+      if (outcome.status === "saved" || outcome.status === "stale") setDoc(outcome.doc);
+      if (outcome.status === "failed") {
+        console.error("[paseo-quick-prompts] failed to save quick prompts", outcome.error);
+        toast.error("Could not save quick prompts. Try again.");
       }
+      return outcome.status;
     });
     queue.current = run;
     return run;
+  };
+
+  const commit = async (edit: Edit): Promise<boolean> => {
+    const status = await enqueue(edit);
+    if (status === "stale") toast.error(STALE_MESSAGE);
+    return status === "saved";
+  };
+
+  const remove = (id: string): void => {
+    deletedHere.current.add(id);
+    void commit(deletePrompt(id));
+  };
+
+  /** Saves a field's text; if another client deleted its prompt, the text goes to the clipboard. */
+  const commitText = async (id: string, field: Field, value: string): Promise<boolean> => {
+    const status = await enqueue(updatePrompt(id, field, value));
+    if (status === "saved" || status === "failed") return status === "saved";
+    const deletedElsewhere =
+      !deletedHere.current.has(id) && !latest.current.values.prompts.some((prompt) => prompt.id === id);
+    if (deletedElsewhere) void keepText(value);
+    else if (status === "stale") toast.error(STALE_MESSAGE);
+    return false;
+  };
+
+  const keepText = async (value: string): Promise<void> => {
+    const message = "That quick prompt was deleted elsewhere, so your edit was not saved.";
+    try {
+      await copyText(value);
+      toast.show(`${message} It was copied to the clipboard.`, { variant: "warning" });
+    } catch {
+      const preview = value.length > 200 ? `${value.slice(0, 200)}…` : value;
+      toast.show(`${message} Your text: ${preview}`, { variant: "error", durationMs: 15_000 });
+    }
   };
 
   const prompts = doc.values.prompts;
@@ -409,6 +450,8 @@ function PromptLibrary({ settings, theme, layout }: { settings: ReadySettings } 
           theme={theme}
           styles={styles}
           commit={commit}
+          commitText={commitText}
+          remove={remove}
         />
       ))}
       <NewPromptCard count={prompts.length} theme={theme} styles={styles} commit={commit} />
