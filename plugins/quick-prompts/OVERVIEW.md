@@ -18,5 +18,4 @@ Prompts are stored on the Paseo host and shared by every app connected to it.
 
 ## Limits
 
-- A pill sends right away. It does not put the text in the composer for editing first.
 - Pills appear on existing agents, not in the composer for a new agent.
