@@ -56,11 +56,11 @@ export function codexArgs(model: string | null, schemaPath: string, outputPath: 
 
 export function opencodeArgs(model: string | null, workdir: string, major: number | null): string[] {
   // The 2.x CLI (@opencode/cli) dropped `run --pure` and `--dir`; 1.x (opencode-ai) still needs
-  // them. An unknown generation keeps the 1.x flags, which is the behavior this always had.
+  // them. On 2.x, --standalone avoids a persistent background service. Unknown versions use 1.x flags.
   const legacy = major === null || major < 2;
   return [
     "run",
-    ...(legacy ? ["--pure"] : []),
+    ...(legacy ? ["--pure"] : ["--standalone"]),
     "--format",
     "json",
     // Read-only agent; without --auto, any permission request is rejected.

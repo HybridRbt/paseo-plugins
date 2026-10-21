@@ -22,9 +22,9 @@ describe("CLI arguments", () => {
     ]);
   });
 
-  it("drops the 1.x-only flags on the opencode 2.x CLI", () => {
+  it("runs the opencode 2.x CLI standalone without the 1.x-only flags", () => {
     expect(opencodeArgs("p/m", "/tmp/x", 2)).toEqual([
-      "run", "--format", "json", "--agent", "plan", "--model", "p/m",
+      "run", "--standalone", "--format", "json", "--agent", "plan", "--model", "p/m",
     ]);
   });
 

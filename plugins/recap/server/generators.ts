@@ -34,8 +34,8 @@ export class RecapGenerator {
   readonly #unavailableUntil = new Map<string, number>();
   readonly #waiting: Array<() => void> = [];
   #active = 0;
-  /** opencode CLI generation, detected once per plugin process: null is unknown (use 1.x flags). */
-  #opencodeMajor: number | null | undefined;
+  /** Successfully detected opencode CLI generations, keyed by executable and leading arguments. */
+  readonly #opencodeMajors = new Map<string, number>();
 
   constructor(deps: GeneratorDeps) {
     this.#deps = deps;
@@ -142,10 +142,10 @@ export class RecapGenerator {
           return await parseCodexResult(result, outputPath);
         }
         case "opencode": {
-          const major = await this.#opencodeGeneration(run);
+          const major = await this.#opencodeGeneration(candidate.command, run);
           const parsed = parseOpencodeEvents(await run(opencodeArgs(candidate.model, workdir, major)));
           // `opencode run` always persists a session; remove it so recaps leave no trace.
-          if (parsed.sessionId) await this.#deleteOpencodeSession(candidate, parsed.sessionId, workdir, env);
+          if (parsed.sessionId) await this.#deleteOpencodeSession(candidate, parsed.sessionId, major, workdir, env);
           if (parsed.error) throw parsed.error;
           return parsed.recap;
         }
@@ -155,20 +155,24 @@ export class RecapGenerator {
     }
   }
 
-  /** Detects the opencode CLI generation once; spawn failures propagate as a failed candidate. */
+  /** Caches successful version probes per command; spawn failures propagate as a failed candidate. */
   async #opencodeGeneration(
+    command: readonly string[],
     run: (args: readonly string[]) => Promise<ProcessResult>,
   ): Promise<number | null> {
-    if (this.#opencodeMajor === undefined) {
-      const result = await run(["--version"]);
-      this.#opencodeMajor = parseOpencodeMajor(result.stdout, result.code);
-    }
-    return this.#opencodeMajor;
+    const key = command.join("\0");
+    const cached = this.#opencodeMajors.get(key);
+    if (cached !== undefined) return cached;
+    const result = await run(["--version"]);
+    const major = parseOpencodeMajor(result.stdout, result.code);
+    if (major !== null) this.#opencodeMajors.set(key, major);
+    return major;
   }
 
   async #deleteOpencodeSession(
     candidate: GeneratorCandidate,
     sessionId: string,
+    major: number | null,
     workdir: string,
     env: NodeJS.ProcessEnv,
   ): Promise<void> {
@@ -176,7 +180,7 @@ export class RecapGenerator {
     try {
       const result = await this.#deps.runProcess(
         executable,
-        [...leading, "session", "delete", sessionId],
+        [...leading, "session", "delete", ...(major !== null && major >= 2 ? ["--standalone"] : []), sessionId],
         { stdin: "", cwd: workdir, env, signal: new AbortController().signal, timeoutMs: CLEANUP_TIMEOUT_MS },
       );
       if (result.code !== 0) this.#deps.log("could not delete opencode recap session", sessionId);
